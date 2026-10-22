@@ -15,7 +15,7 @@
 //! flags: --preview (360p) | --final (1080p) | default 720p draft
 //!        --captions on|off  --clips DIR  --motion DIR  --out FILE  --out-dir DIR  --build-dir DIR
 //!        --encoder auto|nvenc|videotoolbox|x264 (auto)
-//!        --chunk-frames N (60)  --retries N (3)  --no-qa  --json (NDJSON progress + result on stdout)
+//!        --chunk-frames N (60)  --retries N (3)  --jobs N (cores)  --no-qa  --json (NDJSON progress + result on stdout)
 //! exit:  0 ok, 1 failed, 2 bad config/usage, 3 QA failed, 4 missing input
 //! ```
 use anyhow::Result;
@@ -44,10 +44,11 @@ struct Opts {
     retries: usize,
     no_qa: bool,
     encoder: EncoderChoice,
+    jobs: usize,
 }
 
 fn parse(args: &[String]) -> Result<Opts, ConfigError> {
-    let mut o = Opts { chunk_frames: 60, retries: 3, ..Default::default() };
+    let mut o = Opts { chunk_frames: 60, retries: 3, jobs: promo::pool::default_jobs(), ..Default::default() };
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -80,6 +81,7 @@ fn parse(args: &[String]) -> Result<Opts, ConfigError> {
             "--chunk" => o.chunk = Some(num(&val(&mut it, a)?, a)?),
             "--chunk-frames" => o.chunk_frames = num(&val(&mut it, a)?, a)?.max(1),
             "--retries" => o.retries = num(&val(&mut it, a)?, a)?.max(1),
+            "--jobs" => o.jobs = num(&val(&mut it, a)?, a)?.max(1),
             f if f.starts_with("--") => return Err(ConfigError(format!("unknown flag {f}"))),
             p if o.cmd.is_empty() => o.cmd = p.to_string(),
             p => o.pos.push(p.to_string()),
@@ -113,7 +115,7 @@ fn load(cfg: &Path, o: &Opts) -> Result<Plan> {
 }
 
 fn build_options(o: &Opts) -> BuildOptions {
-    BuildOptions { res: o.res, overrides: o.ov.clone(), out: o.out.clone(), chunk_frames: o.chunk_frames, retries: o.retries, qa: !o.no_qa, encoder: o.encoder }
+    BuildOptions { res: o.res, overrides: o.ov.clone(), out: o.out.clone(), chunk_frames: o.chunk_frames, retries: o.retries, qa: !o.no_qa, encoder: o.encoder, jobs: o.jobs }
 }
 
 /// One build, with its result printed as the last NDJSON event.
@@ -197,7 +199,7 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
                 Some("overlays") => Only::Overlays,
                 Some(x) => return Err(ConfigError(format!("plate takes shots|overlays, got {x}")).into()),
             };
-            plate::run(&mut p, o.res, only, ev)?;
+            plate::run(&mut p, o.res, only, o.jobs, ev)?;
             p.save()?;
             Ok(Exit::Ok)
         }

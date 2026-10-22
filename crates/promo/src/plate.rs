@@ -1,16 +1,18 @@
 //! Plates: the per-frame rasters fframes composites. fframes takes no per-frame raster input from a video file in this
 //! harness, so the ffmpeg CLI cuts each shot into JPG frames at the output size (cover-fit, optional blur) and each
-//! motion overlay into cropped RGBA PNG frames at its drawn width. Every shot / overlay is stamped with its parameters,
-//! so a rerun only re-cuts what changed. Overlay crops given as `"auto"` / `"full"` are measured here and cached in
-//! `build/crops.json`.
+//! motion overlay into cropped RGBA PNG frames at its drawn width, one ffmpeg per plate and several plates at once.
+//! Every shot / overlay is stamped with its parameters, so a rerun only re-cuts what changed. Overlay crops given as
+//! `"auto"` / `"full"` are measured here and cached in `build/crops.json`.
 use crate::config::{CropMode, Fit, Res};
 use crate::error::MissingInput;
 use crate::plan::{Overlay, Plan, key_of};
+use crate::pool;
 use crate::progress::{Events, Stage};
 use anyhow::{Context, Result};
 use datavid::media::{self, ffmpeg};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// skip work whose parameters did not change since the last run
 fn fresh(stamp: &Path, key: &str) -> bool {
@@ -25,98 +27,124 @@ pub enum Only {
     Overlays,
 }
 
-pub fn run(plan: &mut Plan, r: Res, only: Only, ev: &Events) -> Result<()> {
+/// One plate to cut: a shot (by index) or a motion overlay (by index).
+#[derive(Debug, Clone, Copy)]
+enum Cut {
+    Shot(usize),
+    Overlay(usize),
+}
+
+/// Cut the plates, `jobs` ffmpeg processes at a time (each shot and overlay is independent).
+pub fn run(plan: &mut Plan, r: Res, only: Only, jobs: usize, ev: &Events) -> Result<()> {
     measure_crops(plan)?;
     let dir = plan.frames_dir(r);
     std::fs::create_dir_all(&dir)?;
+    let mut cuts = vec![];
+    if only != Only::Overlays {
+        cuts.extend((0..plan.shots.len()).map(Cut::Shot));
+    }
+    if only != Only::Shots {
+        cuts.extend((0..plan.overlays.len()).map(Cut::Overlay));
+    }
+    let plan: &Plan = plan;
+    let total = cuts.len();
+    let done = AtomicUsize::new(0);
+    pool::map(jobs, &cuts, |c| {
+        let msg = match *c {
+            Cut::Shot(i) => cut_shot(plan, r, i)?,
+            Cut::Overlay(i) => cut_overlay(plan, r, i)?,
+        };
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(m) = msg {
+            ev.log(&m);
+            ev.progress(Stage::Plate, n, total);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Cut shot `i` into `bg_%05d.jpg` frames unless its stamp is current; returns the log line when it was cut.
+fn cut_shot(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
+    let sh = &plan.shots[i];
+    let dir = plan.frames_dir(r);
     let s = r.scale();
     let (ow, oh) = plan.out_size(r);
     let fps = plan.fps;
-    let total = plan.shots.len() + plan.overlays.len();
-    let mut done = 0;
-    if only != Only::Overlays {
-        for (i, sh) in plan.shots.iter().enumerate() {
-            let (a, b) = (plan.fi(sh.t0), plan.fi(sh.t1));
-            let n = b - a;
-            let key = key_of(&format!("{} {} {a} {n} {ow}x{oh} {} {:?} {:?}", sh.clip.display(), sh.src_in, sh.blur, sh.focus, plan.look.fit));
-            let stamp = dir.join(format!(".shot_{i:03}"));
-            done += 1;
-            if n == 0 || (fresh(&stamp, &key) && dir.join(Plan::bg_name(b - 1)).exists()) {
-                continue;
-            }
-            if !sh.clip.is_file() {
-                return Err(MissingInput(format!("clip {}", sh.clip.display())).into());
-            }
-            let [fx, fy] = sh.focus;
-            let mut vf = match plan.look.fit {
-                Fit::Cover => format!("fps={fps},scale={ow}:{oh}:force_original_aspect_ratio=increase:flags=lanczos,crop={ow}:{oh}:(iw-{ow})*{fx}:(ih-{oh})*{fy}"),
-                Fit::Stretch => format!("fps={fps},scale={ow}:{oh}:flags=lanczos"),
-            };
-            if sh.blur > 0.0 {
-                vf.push_str(&format!(",gblur=sigma={:.1}", sh.blur * s));
-            }
-            let args: Vec<String> = [
-                "-ss".into(),
-                format!("{:.3}", sh.src_in),
-                "-i".into(),
-                sh.clip.display().to_string(),
-                "-frames:v".into(),
-                n.to_string(),
-                "-vf".into(),
-                vf,
-                "-q:v".into(),
-                "2".into(),
-                "-start_number".into(),
-                a.to_string(),
-                dir.join("bg_%05d.jpg").display().to_string(),
-            ]
-            .to_vec();
-            ffmpeg(&args, &sh.clip.display().to_string())?;
-            for f in a..b {
-                anyhow::ensure!(dir.join(Plan::bg_name(f)).exists(), "shot {i} ({}) runs out of source at frame {f}: lower `in` or shorten the shot", sh.clip.display());
-            }
-            std::fs::write(&stamp, &key)?;
-            ev.log(&format!("plate: shot {i:02} {} -> frames {a}..{b}", sh.clip.file_name().unwrap_or_default().to_string_lossy()));
-            ev.progress(Stage::Plate, done, total);
-        }
-    } else {
-        done += plan.shots.len();
+    let (a, b) = (plan.fi(sh.t0), plan.fi(sh.t1));
+    let n = b - a;
+    let key = key_of(&format!("{} {} {a} {n} {ow}x{oh} {} {:?} {:?}", sh.clip.display(), sh.src_in, sh.blur, sh.focus, plan.look.fit));
+    let stamp = dir.join(format!(".shot_{i:03}"));
+    if n == 0 || (fresh(&stamp, &key) && dir.join(Plan::bg_name(b - 1)).exists()) {
+        return Ok(None);
     }
-    if only != Only::Shots {
-        for (i, o) in plan.overlays.iter().enumerate() {
-            done += 1;
-            let n = plan.fi(o.t1) - plan.fi(o.t0);
-            let [cx, cy, cw, ch] = o.crop_box.context("overlay crop not measured")?;
-            let pw = ((o.w * s) / 2.0).round() as u32 * 2;
-            let key = key_of(&format!("{} {n} {cx} {cy} {cw} {ch} {pw}", o.asset.display()));
-            let stamp = dir.join(format!(".ov_{i:02}"));
-            if n == 0 || (fresh(&stamp, &key) && dir.join(Plan::ov_name(i, n - 1)).exists()) {
-                continue;
-            }
-            if !o.asset.is_file() {
-                return Err(MissingInput(format!("motion asset {}", o.asset.display())).into());
-            }
-            let vf = format!("fps={fps},crop={cw}:{ch}:{cx}:{cy},scale={pw}:-2:flags=lanczos,format=rgba");
-            let pat = dir.join(format!("ov_{i:02}_%04d.png"));
-            let args: Vec<String> = ["-i".into(), o.asset.display().to_string(), "-frames:v".into(), n.to_string(), "-vf".into(), vf, "-start_number".into(), "0".into(), pat.display().to_string()].to_vec();
-            ffmpeg(&args, &o.label())?;
-            // an asset shorter than its slot holds its last frame
-            let mut last = None;
-            for k in 0..n {
-                let p = dir.join(Plan::ov_name(i, k));
-                if p.exists() {
-                    last = Some(p);
-                } else if let Some(l) = &last {
-                    std::fs::copy(l, &p)?;
-                }
-            }
-            anyhow::ensure!(last.is_some(), "overlay {} produced no frames", o.label());
-            std::fs::write(&stamp, &key)?;
-            ev.log(&format!("plate: overlay {i:02} {} -> {n} frames at {pw} px", o.label()));
-            ev.progress(Stage::Plate, done, total);
+    if !sh.clip.is_file() {
+        return Err(MissingInput(format!("clip {}", sh.clip.display())).into());
+    }
+    let [fx, fy] = sh.focus;
+    let mut vf = match plan.look.fit {
+        Fit::Cover => format!("fps={fps},scale={ow}:{oh}:force_original_aspect_ratio=increase:flags=lanczos,crop={ow}:{oh}:(iw-{ow})*{fx}:(ih-{oh})*{fy}"),
+        Fit::Stretch => format!("fps={fps},scale={ow}:{oh}:flags=lanczos"),
+    };
+    if sh.blur > 0.0 {
+        vf.push_str(&format!(",gblur=sigma={:.1}", sh.blur * s));
+    }
+    let args: Vec<String> = [
+        "-ss".into(),
+        format!("{:.3}", sh.src_in),
+        "-i".into(),
+        sh.clip.display().to_string(),
+        "-frames:v".into(),
+        n.to_string(),
+        "-vf".into(),
+        vf,
+        "-q:v".into(),
+        "2".into(),
+        "-start_number".into(),
+        a.to_string(),
+        dir.join("bg_%05d.jpg").display().to_string(),
+    ]
+    .to_vec();
+    ffmpeg(&args, &sh.clip.display().to_string())?;
+    for f in a..b {
+        anyhow::ensure!(dir.join(Plan::bg_name(f)).exists(), "shot {i} ({}) runs out of source at frame {f}: lower `in` or shorten the shot", sh.clip.display());
+    }
+    std::fs::write(&stamp, &key)?;
+    Ok(Some(format!("plate: shot {i:02} {} -> frames {a}..{b}", sh.clip.file_name().unwrap_or_default().to_string_lossy())))
+}
+
+/// Cut overlay `i` into cropped `ov_<i>_%04d.png` frames unless its stamp is current; returns the log line when it was cut.
+fn cut_overlay(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
+    let o = &plan.overlays[i];
+    let dir = plan.frames_dir(r);
+    let n = plan.fi(o.t1) - plan.fi(o.t0);
+    let [cx, cy, cw, ch] = o.crop_box.context("overlay crop not measured")?;
+    let pw = ((o.w * r.scale()) / 2.0).round() as u32 * 2;
+    let key = key_of(&format!("{} {n} {cx} {cy} {cw} {ch} {pw}", o.asset.display()));
+    let stamp = dir.join(format!(".ov_{i:02}"));
+    if n == 0 || (fresh(&stamp, &key) && dir.join(Plan::ov_name(i, n - 1)).exists()) {
+        return Ok(None);
+    }
+    if !o.asset.is_file() {
+        return Err(MissingInput(format!("motion asset {}", o.asset.display())).into());
+    }
+    let vf = format!("fps={},crop={cw}:{ch}:{cx}:{cy},scale={pw}:-2:flags=lanczos,format=rgba", plan.fps);
+    let pat = dir.join(format!("ov_{i:02}_%04d.png"));
+    let args: Vec<String> = ["-i".into(), o.asset.display().to_string(), "-frames:v".into(), n.to_string(), "-vf".into(), vf, "-start_number".into(), "0".into(), pat.display().to_string()].to_vec();
+    ffmpeg(&args, &o.label())?;
+    // an asset shorter than its slot holds its last frame
+    let mut last = None;
+    for k in 0..n {
+        let p = dir.join(Plan::ov_name(i, k));
+        if p.exists() {
+            last = Some(p);
+        } else if let Some(l) = &last {
+            std::fs::copy(l, &p)?;
         }
     }
-    Ok(())
+    anyhow::ensure!(last.is_some(), "overlay {} produced no frames", o.label());
+    std::fs::write(&stamp, &key)?;
+    Ok(Some(format!("plate: overlay {i:02} {} -> {n} frames at {pw} px", o.label())))
 }
 
 /// Resolve every `"auto"` / `"full"` crop (cached by asset path in `build/crops.json`).

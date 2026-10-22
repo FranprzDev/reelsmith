@@ -24,6 +24,7 @@ overrides
   --out FILE  --out-dir DIR  --build-dir DIR
   --encoder auto|nvenc|videotoolbox|x264   delivery H.264 encoder (auto: NVENC, VideoToolbox, else libx264)
   --chunk-frames N (60)  --retries N (3)  --no-qa
+  --jobs N                   plates cut at once (default: every core)
 
 machine use
   --json                     NDJSON on stdout: stage / progress / result events (logs stay on stderr)
