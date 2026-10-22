@@ -26,7 +26,7 @@ cue = "braam"
 clips = [{ clip = "nebula", in = 3.0 }]
 
 [end_card]
-clip = { clip = "aurora", in = 3.0 }
+clip = { clip = "aurora", in = 2.0 }
 asset = "cta"
 dur = 3.5
 text = "SEE YOU THERE"

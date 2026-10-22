@@ -2,7 +2,7 @@
 
 No footage needed: `make_sample_clips` draws four 6 s clips with FFmpeg's own sources (`nebula` Mandelbrot zoom,
 `cells` Game of Life, `aurora` moving gradients, `grid` test pattern) and two alpha motion graphics with a short sound
-(`badge` title card, `cta` full-frame end card). The ad: 4 beats + end card, about 11 s, vertical.
+(`badge` title card, `cta` full-frame end card). The ad: 4 beats + end card, about 10 s, vertical.
 
 ## Through an MCP host
 
