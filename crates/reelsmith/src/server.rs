@@ -172,6 +172,7 @@ impl Reelsmith {
             retries: 3,
             qa: true,
             encoder: a.encoder,
+            jobs: promo::pool::default_jobs(),
         };
         let id = self.jobs.start(config, opts)?;
         Ok(Json(self.jobs.wait(&id, Duration::from_secs(a.wait_seconds.unwrap_or(DEFAULT_WAIT_S))).await?))

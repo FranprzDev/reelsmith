@@ -97,6 +97,7 @@ promo plate [shots|overlays] | audio | render [--chunk K] | mux [--out F] | srt 
 --out FILE --out-dir DIR --build-dir DIR
 --encoder auto|nvenc|videotoolbox|x264   delivery encoder (auto: NVENC, VideoToolbox, else libx264)
 --chunk-frames N (60) --retries N (3) --no-qa
+--jobs N                          plates cut at once (default: every core)
 --json                            machine-readable progress on stdout
 ```
 

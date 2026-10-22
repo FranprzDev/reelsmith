@@ -22,6 +22,8 @@ pub struct BuildOptions {
     pub retries: usize,
     pub qa: bool,
     pub encoder: EncoderChoice,
+    /// how many plates / chunks run at once (see [`crate::pool::default_jobs`])
+    pub jobs: usize,
 }
 
 /// What a resolved config will render.
@@ -128,7 +130,7 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     ev.stage(Stage::Check, Status::Done);
 
     ev.stage(Stage::Plate, Status::Start);
-    plate::run(&mut p, r, Only::All, ev)?;
+    plate::run(&mut p, r, Only::All, o.jobs, ev)?;
     p.save()?;
     ev.stage(Stage::Plate, Status::Done);
 
