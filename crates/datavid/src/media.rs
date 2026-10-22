@@ -20,7 +20,7 @@ pub fn ffmpeg<S: AsRef<std::ffi::OsStr>>(args: &[S], what: &str) -> Result<()> {
 /// `ffprobe -of json` with the format duration and every stream's basic fields.
 pub fn probe(file: &Path) -> Result<Value> {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels,pix_fmt", "-of", "json"])
+        .args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,nb_frames,sample_rate,channels,pix_fmt", "-of", "json"])
         .arg(file)
         .output()
         .context("running ffprobe")?;

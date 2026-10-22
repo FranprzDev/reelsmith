@@ -230,6 +230,12 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, enc: Encoder, out: &Path) -> R
         "0:v".into(),
         "-map".into(),
         "1:a".into(),
+        // Matroska chunk durations stop at the last frame's pts, so the concat demuxer overlaps (and drops) a frame per
+        // join; renumbering the frames keeps every rendered frame at a constant rate
+        "-vf".into(),
+        format!("setpts=N/({}*TB)", p.fps),
+        "-r".into(),
+        p.fps.to_string(),
     ];
     args.extend(enc.args(w, h, p.fps));
     args.extend([

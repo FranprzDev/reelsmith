@@ -45,6 +45,9 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
     let (vw, vh) = (v["width"].as_u64().unwrap_or(0), v["height"].as_u64().unwrap_or(0));
     rep.check("size", vw == ew as u64 && vh == eh as u64, &format!("{vw}×{vh} (expected {ew}×{eh}, {})", r.tag()));
     rep.check("fps", v["r_frame_rate"] == format!("{}/1", p.fps), &format!("{}", v["r_frame_rate"]));
+    if let Some(n) = v["nb_frames"].as_str().and_then(|s| s.parse::<usize>().ok()) {
+        rep.check("video frames", n == p.frames(), &format!("{n} (plan {})", p.frames()));
+    }
     rep.check("audio stream", !a.is_null(), &format!("{} {} Hz", a["codec_name"], a["sample_rate"].as_str().unwrap_or("?")));
     rep.put("container", json!({"duration_s": dur, "video": v, "audio": a}));
     // ---- loudness of the encoded audio
