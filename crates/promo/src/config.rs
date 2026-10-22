@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Canvas shape. Positions and sizes in a config are design pixels on the 1080p canvas of this aspect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Aspect {
     /// 1080×1920 (Reels, TikTok, Shorts)
     #[default]
@@ -40,6 +41,7 @@ impl Aspect {
 /// Output resolution: 720p drafts (short side 720 px) by default, `--preview` for a fast 360p check, `--final` for the
 /// 1080p canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Res {
     /// short side 360 px: smoke tests and quick looks
@@ -304,6 +306,7 @@ impl OverlayRef {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum CueKind {
     /// low brass hit (boss / big reveal)
@@ -477,6 +480,7 @@ impl Default for CaptionsCfg {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum MusicKind {
     /// the built-in procedural bed (no samples)

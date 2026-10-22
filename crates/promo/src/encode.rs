@@ -8,6 +8,7 @@ use std::process::Command;
 
 /// What the caller asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
     /// NVENC when an NVIDIA GPU answers, VideoToolbox on macOS, otherwise libx264
@@ -20,6 +21,7 @@ pub enum EncoderChoice {
 
 /// The encoder a build actually used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Encoder {
     /// `h264_nvenc` (NVIDIA)

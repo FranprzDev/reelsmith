@@ -30,12 +30,21 @@ jobs:
           key: ${{ matrix.target }}
       - name: System packages
         run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libfontconfig-dev ffmpeg
-      - name: Build
+      # one fframes binary at a time keeps the peak memory of the final links low
+      - name: Build promo
         run: cargo build --release --locked -p promo
+      - name: Build reelsmith
+        run: cargo build --release --locked -p reelsmith
       - name: Smoke check
-        run: target/release/promo help
+        run: |
+          target/release/promo help
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > mcp_in.jsonl
+          (cat mcp_in.jsonl; sleep 5) | timeout 30 target/release/reelsmith | tee mcp.jsonl || true
+          grep -q '"render"' mcp.jsonl
       - uses: actions/upload-artifact@v4
         with:
-          name: promo-${{ matrix.target }}
-          path: target/release/promo
+          name: reelsmith-${{ matrix.target }}
+          path: |
+            target/release/reelsmith
+            target/release/promo
           retention-days: 7
