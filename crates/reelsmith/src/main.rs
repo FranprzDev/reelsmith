@@ -3,6 +3,7 @@
 //! The host (Claude Desktop, Codex, OpenCode or any MCP client) starts the binary and talks JSON-RPC over stdin /
 //! stdout; logs go to stderr. The render re-runs this same binary as its per-chunk fframes worker
 //! (`promo::render::PASSTHROUGH`), so there is a single executable to install.
+mod animate;
 mod brief;
 mod clips;
 mod jobs;

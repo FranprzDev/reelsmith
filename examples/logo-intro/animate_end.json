@@ -1,0 +1,2 @@
+{"svg_path": "<repo>/examples/logo-intro/logo.svg", "animation": "glow", "easing": "ease_out", "duration_s": 0.9,
+ "hold_s": 2.4, "fps": 60, "width": 1080, "output": "<media>/logo_end.mov"}
