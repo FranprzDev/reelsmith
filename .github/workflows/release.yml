@@ -1,0 +1,103 @@
+name: release
+
+# Builds the reelsmith MCP server and the promo CLI for Windows, macOS and Linux. A pushed `v*` tag publishes the
+# archives as a GitHub Release; a pull request that touches this file only builds them (artifacts).
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Windows links FFmpeg dynamically from a shared LGPL build (headers + import libraries); its DLLs ship next to the exe.
+  # The FFmpeg major version must match the ffmpeg-sys-fframes bindings (release/9.0).
+  FFMPEG_WIN_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libclang-dev pkg-config libfontconfig-dev
+      - name: Shared FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:FFMPEG_WIN_URL -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-win
+          $dir = (Get-ChildItem ffmpeg-win -Directory | Select-Object -First 1).FullName
+          "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # rustc loads the fframes proc-macro, which links FFmpeg: its DLLs must be on PATH at build time too
+          "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build promo
+        run: cargo build --release --locked -p promo
+      - name: Build reelsmith
+        run: cargo build --release --locked -p reelsmith
+      - name: Package
+        shell: bash
+        run: |
+          name=reelsmith-${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}-${{ matrix.target }}
+          mkdir -p "dist/$name"
+          cp README.md LICENSE "dist/$name/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp target/release/reelsmith.exe target/release/promo.exe "dist/$name/"
+            cp "$FFMPEG_DIR"/bin/*.dll "dist/$name/"
+            cp "$FFMPEG_DIR"/LICENSE.txt "dist/$name/FFMPEG-LICENSE.txt" 2>/dev/null || true
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
+          else
+            cp target/release/reelsmith target/release/promo "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+          echo "PKG=dist/$name" >> "$GITHUB_ENV"
+      - name: Smoke check (MCP tools/list)
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > mcp_in.jsonl
+          bin="$PKG/reelsmith"; [ "$RUNNER_OS" = "Windows" ] && bin="$PKG/reelsmith.exe"
+          # the server exits when stdin closes; the step timeout guards a hang (macOS has no `timeout`)
+          (cat mcp_in.jsonl; sleep 5) | "$bin" | tee mcp.jsonl || true
+          grep -q '"render"' mcp.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reelsmith-${{ matrix.target }}
+          path: dist/*.*
+          retention-days: 14
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --title "Reelsmith ${{ github.ref_name }}" --generate-notes
