@@ -10,6 +10,11 @@ publish = false
 [profile.release]
 debug = false
 opt-level = 3
+# one codegen unit and thin LTO let LLVM inline across crates (fframes rasteriser, png/zlib, DSP) for faster frames.
+# panic stays `unwind`: the MCP server runs each job on a blocking task and must survive a job that panics.
+# No `target-cpu=native`: release binaries are copied to client machines whose CPU is unknown.
+lto = "thin"
+codegen-units = 1
 
 # image / DSP heavy prep code is unusable in debug builds; keep deps optimised even for `cargo build`
 [profile.dev.package."*"]
