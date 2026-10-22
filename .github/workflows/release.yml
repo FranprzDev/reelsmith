@@ -51,6 +51,8 @@ jobs:
           $dir = (Get-ChildItem ffmpeg-win -Directory | Select-Object -First 1).FullName
           "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # rustc loads the fframes proc-macro, which links FFmpeg: its DLLs must be on PATH at build time too
+          "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Build promo
         run: cargo build --release --locked -p promo
       - name: Build reelsmith
@@ -73,10 +75,12 @@ jobs:
           echo "PKG=dist/$name" >> "$GITHUB_ENV"
       - name: Smoke check (MCP tools/list)
         shell: bash
+        timeout-minutes: 2
         run: |
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > mcp_in.jsonl
           bin="$PKG/reelsmith"; [ "$RUNNER_OS" = "Windows" ] && bin="$PKG/reelsmith.exe"
-          (cat mcp_in.jsonl; sleep 5) | timeout 30 "$bin" | tee mcp.jsonl || true
+          # the server exits when stdin closes; the step timeout guards a hang (macOS has no `timeout`)
+          (cat mcp_in.jsonl; sleep 5) | "$bin" | tee mcp.jsonl || true
           grep -q '"render"' mcp.jsonl
       - uses: actions/upload-artifact@v4
         with:
