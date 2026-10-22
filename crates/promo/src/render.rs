@@ -1,5 +1,5 @@
 //! The fframes render: a `Video` per canvas shape, a chunked and resumable full render (each chunk its own process with
-//! only its own rasters, retried when killed) and the final join + encode + audio mux.
+//! only its own rasters, several chunks at once, retried when killed) and the final join + encode + audio mux.
 //!
 //! Chunks are lossless FFV1 in Matroska (a codec every FFmpeg build has, so the render works the same on every OS); the
 //! delivery H.264 is encoded once at the mux with the encoder [`crate::encode`] picked.
@@ -12,9 +12,11 @@ use crate::config::{Aspect, Res};
 use crate::encode::Encoder;
 use crate::frame::FrameBuilder;
 use crate::plan::{Plan, key_of};
+use crate::pool;
 use crate::progress::{Events, Stage};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// container of the lossless chunks
 const PART_EXT: &str = "mkv";
@@ -176,19 +178,19 @@ pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize),
     anyhow::bail!("render failed: {last}")
 }
 
-/// Every chunk in order (or only `only`). Returns the parts.
-pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize, only: Option<usize>, ev: &Events) -> Result<Vec<PathBuf>> {
+/// Every chunk (or only `only`), `jobs` fframes processes at a time. Returns the parts in order.
+pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize, only: Option<usize>, jobs: usize, ev: &Events) -> Result<Vec<PathBuf>> {
     let rs = ranges(&fb.plan, chunk_frames);
-    let mut parts = vec![];
-    for (k, range) in rs.iter().enumerate() {
-        if only.is_some_and(|o| o != k) {
-            continue;
-        }
-        let (part, rendered) = render_chunk(fb, r, k, *range, retries)?;
+    let todo: Vec<usize> = (0..rs.len()).filter(|k| only.is_none_or(|o| o == *k)).collect();
+    let done = AtomicUsize::new(0);
+    let parts = pool::map(jobs, &todo, |&k| {
+        let range = rs[k];
+        let (part, rendered) = render_chunk(fb, r, k, range, retries)?;
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
         ev.log(&format!("render: chunk {}/{} frames {}..{} {}", k + 1, rs.len(), range.0, range.1, if rendered { "rendered" } else { "current" }));
-        ev.progress(Stage::Render, k + 1, rs.len());
-        parts.push(part);
-    }
+        ev.progress(Stage::Render, n, todo.len());
+        Ok(part)
+    })?;
     // parts of an older, longer cut must not be joined
     if only.is_none() {
         for e in std::fs::read_dir(chunks_dir(&fb.plan, r))? {
