@@ -1,0 +1,19 @@
+[package]
+name = "datavid"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The harness media layer on top of fframes: SVG frame helpers, easing, procedural audio and EBU R128 mastering, ffmpeg/ffprobe helpers, QA reports."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+rustfft = "6"
+num-complex = "0.4"
+ebur128 = "0.1"
+hound = "3"
+rand = "0.8"
+rand_pcg = "0.3"
+rand_distr = "0.4"

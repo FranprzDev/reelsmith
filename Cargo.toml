@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/datavid", "crates/promo"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[profile.release]
+debug = false
+opt-level = 3
+
+# image / DSP heavy prep code is unusable in debug builds; keep deps optimised even for `cargo build`
+[profile.dev.package."*"]
+opt-level = 2
