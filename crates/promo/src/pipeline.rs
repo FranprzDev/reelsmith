@@ -1,7 +1,7 @@
 //! The whole pipeline for one config (check -> plate -> audio -> render -> mux -> srt -> qa), shared by every front end
 //! (the `promo` CLI and the Reelsmith MCP server) so they produce the same file from the same config.
 use crate::config::{Aspect, MusicKind, Res};
-use crate::encode::{Encoder, EncoderChoice};
+use crate::encode::{Backend, EncoderChoice};
 use crate::error::Exit;
 use crate::plan::{Overrides, Plan};
 use crate::plate::{self, Only};
@@ -57,8 +57,8 @@ pub struct BuildOutcome {
     pub config: PathBuf,
     pub output: PathBuf,
     pub srt: Option<PathBuf>,
-    /// the delivery encoder this build used
-    pub encoder: Encoder,
+    /// the GPU / encoder backend this build used, with every probe and the reason it was chosen
+    pub backend: Backend,
     pub plan: PlanSummary,
     pub qa: Option<qa::QaSummary>,
 }
@@ -125,12 +125,12 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     ev.stage(Stage::Check, Status::Start);
     let mut p = load(cfg, &o.overrides)?;
     p.ensure_inputs()?;
-    let enc = o.encoder.resolve()?;
-    ev.log(&format!("encoder: {}", enc.ffmpeg_name()));
+    let backend = o.encoder.resolve()?;
+    ev.log(&backend.summary());
     ev.stage(Stage::Check, Status::Done);
 
     ev.stage(Stage::Plate, Status::Start);
-    plate::run(&mut p, r, Only::All, o.jobs, ev)?;
+    plate::run(&mut p, r, Only::All, o.jobs, &backend, ev)?;
     p.save()?;
     ev.stage(Stage::Plate, Status::Done);
 
@@ -145,7 +145,7 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
 
     ev.stage(Stage::Mux, Status::Start);
     let out = o.out.clone().unwrap_or_else(|| p.default_out(r));
-    render::mux(&p, r, o.chunk_frames, enc, &out)?;
+    render::mux(&p, r, o.chunk_frames, &backend, &out)?;
     ev.log(&format!("mux: {}", out.display()));
     ev.stage(Stage::Mux, Status::Done);
 
@@ -165,7 +165,7 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     };
     let ok = qa_v.as_ref().is_none_or(|s| s.ok);
     let exit = if ok { Exit::Ok } else { Exit::QaFailed };
-    let res = BuildOutcome { ok, exit, code: exit as u8, config: cfg.to_path_buf(), output: out.clone(), srt, encoder: enc, plan: summary(&p, r), qa: qa_v };
+    let res = BuildOutcome { ok, exit, code: exit as u8, config: cfg.to_path_buf(), output: out.clone(), srt, backend, plan: summary(&p, r), qa: qa_v };
     std::fs::write(out.with_extension("result.json"), serde_json::to_string_pretty(&res)?)?;
     Ok(res)
 }

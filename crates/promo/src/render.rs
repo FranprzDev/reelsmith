@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use fframes::{AudioMap, Color, Duration, FFramesContext, Frame, Svgr, Video};
 use crate::config::{Aspect, Res};
-use crate::encode::Encoder;
+use crate::encode::Backend;
 use crate::frame::FrameBuilder;
 use crate::plan::{Plan, key_of};
 use crate::pool;
@@ -204,9 +204,10 @@ pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize
     Ok(parts)
 }
 
-/// Join the chunks, encode the delivery H.264 with `enc` and mux the mastered audio. The MP4 is written to the system
+/// Join the chunks, encode the delivery H.264 with the backend's encoder and mux the mastered audio. The MP4 is written to the system
 /// temp folder and then copied (`+faststart` rewrites the file in place, which fails on some network/FUSE filesystems).
-pub fn mux(p: &Plan, r: Res, chunk_frames: usize, enc: Encoder, out: &Path) -> Result<()> {
+pub fn mux(p: &Plan, r: Res, chunk_frames: usize, backend: &Backend, out: &Path) -> Result<()> {
+    let enc = backend.encoder;
     let work = chunks_dir(p, r);
     let n = ranges(p, chunk_frames).len();
     let mut list = String::new();
@@ -219,7 +220,8 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, enc: Encoder, out: &Path) -> R
     anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
     let tmp = std::env::temp_dir().join(format!("promo_{}_{}.mp4", p.name, std::process::id()));
     let (w, h) = p.out_size(r);
-    let mut args: Vec<String> = vec![
+    let mut args = enc.input_args(backend.device.as_deref());
+    args.extend([
         "-f".into(),
         "concat".into(),
         "-safe".into(),
@@ -235,11 +237,11 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, enc: Encoder, out: &Path) -> R
         // Matroska chunk durations stop at the last frame's pts, so the concat demuxer overlaps (and drops) a frame per
         // join; renumbering the frames keeps every rendered frame at a constant rate
         "-vf".into(),
-        format!("setpts=N/({}*TB)", p.fps),
+        format!("setpts=N/({}*TB){}", p.fps, enc.filter_tail()),
         "-r".into(),
         p.fps.to_string(),
-    ];
-    args.extend(enc.args(w, h, p.fps));
+    ]);
+    args.extend(enc.args(r, w, h, p.fps));
     args.extend([
         "-c:a".into(),
         "aac".into(),

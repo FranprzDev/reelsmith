@@ -4,6 +4,7 @@
 //! Every shot / overlay is stamped with its parameters, so a rerun only re-cuts what changed. Overlay crops given as
 //! `"auto"` / `"full"` are measured here and cached in `build/crops.json`.
 use crate::config::{CropMode, Fit, Res};
+use crate::encode::Backend;
 use crate::error::MissingInput;
 use crate::plan::{Overlay, Plan, key_of};
 use crate::pool;
@@ -34,8 +35,9 @@ enum Cut {
     Overlay(usize),
 }
 
-/// Cut the plates, `jobs` ffmpeg processes at a time (each shot and overlay is independent).
-pub fn run(plan: &mut Plan, r: Res, only: Only, jobs: usize, ev: &Events) -> Result<()> {
+/// Cut the plates, `jobs` ffmpeg processes at a time (each shot and overlay is independent); the source clips are
+/// decoded with the backend's hardware decoder when it has one.
+pub fn run(plan: &mut Plan, r: Res, only: Only, jobs: usize, backend: &Backend, ev: &Events) -> Result<()> {
     measure_crops(plan)?;
     let dir = plan.frames_dir(r);
     std::fs::create_dir_all(&dir)?;
@@ -51,7 +53,7 @@ pub fn run(plan: &mut Plan, r: Res, only: Only, jobs: usize, ev: &Events) -> Res
     let done = AtomicUsize::new(0);
     pool::map(jobs, &cuts, |c| {
         let msg = match *c {
-            Cut::Shot(i) => cut_shot(plan, r, i)?,
+            Cut::Shot(i) => cut_shot(plan, r, i, backend)?,
             Cut::Overlay(i) => cut_overlay(plan, r, i)?,
         };
         let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -65,7 +67,7 @@ pub fn run(plan: &mut Plan, r: Res, only: Only, jobs: usize, ev: &Events) -> Res
 }
 
 /// Cut shot `i` into `bg_%05d.jpg` frames unless its stamp is current; returns the log line when it was cut.
-fn cut_shot(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
+fn cut_shot(plan: &Plan, r: Res, i: usize, backend: &Backend) -> Result<Option<String>> {
     let sh = &plan.shots[i];
     let dir = plan.frames_dir(r);
     let s = r.scale();
@@ -89,7 +91,8 @@ fn cut_shot(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
     if sh.blur > 0.0 {
         vf.push_str(&format!(",gblur=sigma={:.1}", sh.blur * s));
     }
-    let args: Vec<String> = [
+    let mut args = backend.decode_args();
+    args.extend([
         "-ss".into(),
         format!("{:.3}", sh.src_in),
         "-i".into(),
@@ -103,8 +106,7 @@ fn cut_shot(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
         "-start_number".into(),
         a.to_string(),
         dir.join("bg_%05d.jpg").display().to_string(),
-    ]
-    .to_vec();
+    ]);
     ffmpeg(&args, &sh.clip.display().to_string())?;
     for f in a..b {
         anyhow::ensure!(dir.join(Plan::bg_name(f)).exists(), "shot {i} ({}) runs out of source at frame {f}: lower `in` or shorten the shot", sh.clip.display());

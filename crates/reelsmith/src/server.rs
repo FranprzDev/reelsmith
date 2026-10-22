@@ -3,7 +3,7 @@ use crate::brief::{self, BriefWritten, CreateProjectArgs, ProjectCreated, WriteB
 use crate::clips::{self, ClipInfo, ClipList};
 use crate::jobs::{JobStatus, Jobs};
 use crate::sample;
-use promo::encode::EncoderChoice;
+use promo::encode::{Backend, EncoderChoice};
 use promo::pipeline::{self, BuildOptions};
 use promo::qa::QaSummary;
 use promo::{Overrides, Res};
@@ -49,11 +49,30 @@ pub struct RenderArgs {
     pub captions_burned_in: Option<bool>,
     /// output MP4 path (default: `<project>/out/<name>_<resolution>_<w>x<h>.mp4`)
     pub out: Option<PathBuf>,
-    /// delivery encoder: "auto" (NVENC on an NVIDIA GPU, VideoToolbox on macOS, else libx264), "nvenc", "videotoolbox" or "x264"
+    /// GPU / encoder backend: "auto" (the first hardware encoder that opens: NVENC, AMF, QSV, VA-API or VideoToolbox,
+    /// else libx264), or force "nvenc", "amf", "qsv", "vaapi", "videotoolbox" or "x264" (an error if it cannot open)
     #[serde(default)]
     pub encoder: EncoderChoice,
     /// how long to wait for the render before returning a job id (default 45)
     pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SystemInfoArgs {
+    /// the backend to test (default "auto": detect the best one)
+    #[serde(default)]
+    pub encoder: EncoderChoice,
+}
+
+/// What this machine renders with.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SystemInfo {
+    /// the GPU / encoder backend a render would use, every probe tried and why it was chosen
+    pub backend: Backend,
+    /// plates and render chunks run this many at a time
+    pub jobs: usize,
+    /// the first line of `ffmpeg -version`
+    pub ffmpeg: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -176,6 +195,19 @@ impl Reelsmith {
         };
         let id = self.jobs.start(config, opts)?;
         Ok(Json(self.jobs.wait(&id, Duration::from_secs(a.wait_seconds.unwrap_or(DEFAULT_WAIT_S))).await?))
+    }
+
+    #[tool(description = "Detect the GPU and encoder this machine renders with (NVIDIA NVENC, AMD AMF / VA-API, Intel QSV / VA-API, Apple VideoToolbox, else libx264 on the CPU) by test-opening each one with ffmpeg; returns the chosen backend, its hardware decoder, every probe with its error and the reason. render reports the same backend in its result.")]
+    async fn system_info(&self, Parameters(a): Parameters<SystemInfoArgs>) -> Result<Json<SystemInfo>, String> {
+        Ok(Json(
+            blocking(move || {
+                clips::ensure_ffmpeg()?;
+                let v = std::process::Command::new("ffmpeg").arg("-version").output()?;
+                let ffmpeg = String::from_utf8_lossy(&v.stdout).lines().next().unwrap_or_default().to_string();
+                Ok(SystemInfo { backend: a.encoder.resolve()?, jobs: promo::pool::default_jobs(), ffmpeg })
+            })
+            .await?,
+        ))
     }
 
     #[tool(description = "Status of a render job: running, succeeded, qa_failed or failed, with the result (output MP4, SRT, QA) once finished.")]
