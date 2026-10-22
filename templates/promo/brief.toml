@@ -1,0 +1,46 @@
+# New promo from texts + clips. Copy this folder, write one [[beat]] per idea, pick a clip for each, then:
+#   promo check  my-ad/brief.toml            # resolves the timeline, lists missing files
+#   promo build  my-ad/brief.toml --preview  # 360p in seconds, to check the cut
+#   promo build  my-ad/brief.toml            # 720p draft (default)
+#   promo build  my-ad/brief.toml --final    # 1080p, once the draft is approved
+# Optional: `extends = "../style.toml"` to share music / look / captions / end card across a series of ads.
+
+[video]
+name = "my_ad"            # output: out/my_ad_<preview|draft|final>_<w>x<h>.mp4 (+ my_ad.srt, + .result.json)
+aspect = "9:16"           # "9:16" (Reels/TikTok/Shorts), "16:9" (YouTube), "1:1"
+
+[paths]
+clips = "clips"           # your recordings: clip = "file stem" (mp4/mov/mkv/webm) or "stem@in-point-seconds"
+motion = "motion"         # alpha .mov motion graphics: overlay = "file stem"
+
+# Text: caption groups split with "|" (without "|", short words join their neighbour). dur is optional: without it the
+# beat lasts as long as its text needs to be read. Burned-in captions are off; the text still sets the timing and
+# becomes the .srt sidecar. `captions.enabled = true` (or --captions on) burns them in.
+[[beat]]
+text = "YOUR HOOK | AS A QUESTION?"
+clip = "hook_clip@0.5"
+overlay = "title_card"    # optional; default slot = the whole beat, crop = "auto", 80 % width, near the top
+
+[[beat]]
+text = "FEATURE ONE"
+flash = true              # white flash + whoosh/hit on the cut into this beat
+clips = ["clip_a@2.0", { clip = "clip_b", in = 1.0, zoom = [1.1, 1.0] }]
+
+[[beat]]
+text = "FEATURE TWO"
+cue = "braam"             # braam | hit | whoosh on the cut into this beat
+clip = "clip_c"
+
+[end_card]
+clip = "outro_clip@3.0"
+asset = "cta"             # full-frame alpha card (crop = "full" by default)
+dur = 4.5
+
+[music]
+kind = "procedural"       # "procedural" (built-in bed), "file" (file = "music.mp3", gain_db, start), "none"
+bpm = 128
+
+# [voiceover]
+# file = "vo.wav"         # the music ducks under it (duck_db = 8)
+# script = "vo.txt"       # timed script ("SECONDS TEXT" lines, or .srt) -> captions aligned to the voice
+# offset = 0.0

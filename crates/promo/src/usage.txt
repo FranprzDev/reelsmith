@@ -1,0 +1,30 @@
+promo — short-form promo / vertical ad videos from a config (docs/PROMO_VIDEOS.md)
+
+usage: promo <command> [CONFIG] [flags]
+
+commands
+  build  CONFIG              check -> plate -> audio -> render -> mux -> srt -> qa
+  batch  CONFIG... | LIST.txt build several configs (a .txt lists one config path per line); keeps going past failures
+  check  CONFIG              resolve the config and list missing inputs (no rendering)
+  plan   CONFIG              print the resolved timeline (JSON)
+  plate  CONFIG [shots|overlays]   cut shots into JPG frames and overlays into RGBA PNG frames (cached)
+  audio  CONFIG              music + hits + cues + overlay sfx + voice-over, mastered to the loudness target
+  render CONFIG [--chunk K]  chunked fframes render (resumable; only changed chunks re-render)
+  mux    CONFIG [--out FILE] join the chunks and mux the audio
+  srt    CONFIG              write the captions as <out>/<name>.srt
+  qa     CONFIG [VIDEO]      loudness, true peak, black frames, caption size, contact sheet -> build/<name>/qa/
+
+resolution (default: 720p draft)
+  --preview                  360p (short side 360): smoke tests and quick looks
+  --final                    1080p design canvas (or PROMO_FINAL=1), only once the draft is approved
+
+overrides
+  --captions on|off          burn in captions (default: the config's captions.enabled, which defaults to off)
+  --clips DIR  --motion DIR  source folders (win over paths.clips / paths.motion)
+  --out FILE  --out-dir DIR  --build-dir DIR
+  --chunk-frames N (60)  --retries N (3)  --no-qa
+
+machine use
+  --json                     NDJSON on stdout: stage / progress / result events (logs stay on stderr)
+  exit codes                 0 ok, 1 failed (retryable), 2 bad config or usage, 3 QA failed, 4 missing input
+  build also writes <output>.result.json

@@ -1,0 +1,10 @@
+# Timed script: one caption per line, "SECONDS TEXT" (m:ss.s works too). Times are voice-over seconds; the config's
+# voiceover.offset shifts them. "A-B TEXT" sets an explicit end; "end S" closes the last caption.
+0.10 WHAT IF
+0.55 MINECRAFT
+1.15 HAD
+1.60 NEW
+2.05 DIMENSIONS?
+2.80 ON OUR SERVER
+3.50-4.20 IT IS REAL
+end 4.3
