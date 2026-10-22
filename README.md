@@ -46,7 +46,8 @@ Reelsmith detects the GPU by test-opening each hardware encoder with a one-frame
 NVIDIA NVENC (+ CUDA decode), AMD AMF on Windows / VA-API on Linux, Intel QSV on Windows / VA-API on Linux, Apple
 VideoToolbox, then libx264 on the CPU. The paired hardware decoder (CUDA, D3D11VA, VA-API, VideoToolbox) cuts the
 source clips when it opens, otherwise they are decoded on the CPU. `system_info` and every `render` result report the
-backend, each probe and the reason; pass `encoder` to `render` to force one (an error if it cannot open).
+backend, each probe and the reason; pass `encoder` to `render` to force one (an error if it cannot open). Measured timings and the recommended
+setup for an RTX 4060: [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Configure your MCP host
 

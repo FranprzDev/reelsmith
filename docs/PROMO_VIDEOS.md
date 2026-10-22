@@ -139,7 +139,7 @@ logs:
   the `ffmpeg` on PATH: `--encoder auto` (default) test-opens NVENC, AMF / QSV (Windows) or VA-API (Linux) and
   VideoToolbox (macOS) and falls back to libx264; `--encoder <name>` forces one and fails clearly when it cannot open.
   The backend's hardware decoder cuts the source clips when it opens. Presets follow the tier (preview fast, final
-  best quality).
+  best quality); see [PERFORMANCE.md](../PERFORMANCE.md).
 - **Plates.** fframes takes no per-frame raster input from a video file in this harness, so `plate` caches every frame
   as JPG (shots, at the output size) and RGBA PNG (overlays, cropped, at their drawn width). Each chunk process only
   loads the rasters it draws (hard-linked into a per-chunk folder), which keeps memory flat.
