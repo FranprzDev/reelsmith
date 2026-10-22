@@ -57,8 +57,7 @@ with the word-by-word pop.
 8. **Draft** (720p, the default): `promo build my-ad/brief.toml`. Iterate on the config; only changed shots are
    re-cut and only changed chunks re-render.
 9. **Final** (1080p, only after the draft is approved): `promo build my-ad/brief.toml --final`.
-10. **Deliver:** `scripts/encode_youtube.sh out/<name>_final_1080x1920.mp4` for a smaller upload copy; the SRT is
-    `out/<name>.srt`.
+10. **Deliver:** `out/<name>_final_1080x1920.mp4` and the subtitles in `out/<name>.srt`.
 
 Several ads in one go: `promo batch a/brief.toml b/brief.toml` or `promo batch ads.txt` (one config path per line,
 relative to the list). It keeps going past a failed config and exits with the first non-zero code.
@@ -96,6 +95,7 @@ promo plate [shots|overlays] | audio | render [--chunk K] | mux [--out F] | srt 
 --captions on|off                 override captions.enabled
 --clips DIR --motion DIR          override the media folders
 --out FILE --out-dir DIR --build-dir DIR
+--encoder auto|nvenc|videotoolbox|x264   delivery encoder (auto: NVENC, VideoToolbox, else libx264)
 --chunk-frames N (60) --retries N (3) --no-qa
 --json                            machine-readable progress on stdout
 ```
@@ -131,9 +131,12 @@ logs:
   and poll the log.
 - **Write MP4s to local disk, then copy.** `+faststart` rewrites the file at the end, which fails with "Error
   writing trailer" on JuiceFS / network filesystems. `promo mux` always writes to the system temp folder and copies.
-- **System packages** after a sandbox restart: `build-essential clang libclang-dev nasm pkg-config libx264-dev
-  libfontconfig-dev`, plus the `ffmpeg` CLI. On aarch64 Linux set `X264_LIB_DIR` to a folder
-  with libx264 ABI 163 (the prebuilt FFmpeg needs it; `build-support/x264_rpath.rs` links it).
+- **System packages**: `build-essential clang libclang-dev pkg-config libfontconfig-dev`, plus the `ffmpeg` CLI. On
+  Linux and macOS the FFmpeg libraries come from a static, portable prebuilt archive (fframes `build-portable`), so no
+  system codec libraries are linked.
+- **Encoding.** Chunks are rendered losslessly (FFV1 in Matroska) and the delivery H.264 is encoded once at the mux by
+  the `ffmpeg` on PATH: `--encoder auto` (default) uses NVENC when an NVIDIA GPU answers, VideoToolbox on macOS and
+  libx264 otherwise; `--encoder nvenc|videotoolbox|x264` forces one and fails clearly when it cannot open.
 - **Plates.** fframes takes no per-frame raster input from a video file in this harness, so `plate` caches every frame
   as JPG (shots, at the output size) and RGBA PNG (overlays, cropped, at their drawn width). Each chunk process only
   loads the rasters it draws (hard-linked into a per-chunk folder), which keeps memory flat.
