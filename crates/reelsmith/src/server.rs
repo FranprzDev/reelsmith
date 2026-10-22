@@ -1,4 +1,5 @@
 //! The MCP tools. Each one is a thin, typed wrapper over the `promo` template and the harness media helpers.
+use crate::animate::{self, AnimateSvgArgs, AnimatedSvg};
 use crate::brief::{self, BriefWritten, CreateProjectArgs, ProjectCreated, WriteBriefArgs};
 use crate::clips::{self, ClipInfo, ClipList};
 use crate::jobs::{JobStatus, Jobs};
@@ -22,7 +23,8 @@ idea: text + clip names + optional overlay, plus an end card) -> render with res
 cut, \"draft\" (720p) for review, \"final\" (1080p) only after the user approves the draft. render returns the MP4 path \
 and the QA report (duration, size, loudness -14 LUFS, true peak, black frames); if it is still running it returns a \
 job_id: call get_status. Burned-in captions are off by default (an SRT is written). Never invent claims for on-screen \
-text: use the user's own wording.";
+text: use the user's own wording. To open or close an ad with a logo, animate_svg turns an SVG into an alpha .mov: \
+write it into the project's motion folder and use its asset_name as a beat overlay (intro) or as end_card.asset.";
 
 /// Seconds `render` waits before handing back a job id (hosts such as Codex time tool calls out at 60 s).
 const DEFAULT_WAIT_S: u64 = 45;
@@ -167,6 +169,11 @@ impl Reelsmith {
     #[tool(description = "The starting templates shipped with Reelsmith (a commented beats brief and a timed voice-over script).")]
     async fn list_templates(&self) -> Json<TemplateList> {
         Json(TemplateList { templates: templates() })
+    }
+
+    #[tool(description = "Animate an SVG (logo, icon, badge) into a transparent motion graphic: an alpha .mov (qtrle or ProRes 4444) at 30 or 60 fps with an entrance preset (fade_scale, slide_up, pop, draw_on, spin, glow), an easing, an optional hold and exit. Returns the .mov, its frame count and duration and a PNG preview. Save it in the project's motion folder and use asset_name as a beat overlay (intro logo) or end_card.asset.")]
+    async fn animate_svg(&self, Parameters(a): Parameters<AnimateSvgArgs>) -> Result<Json<AnimatedSvg>, String> {
+        Ok(Json(blocking(move || animate::animate(&a)).await?))
     }
 
     #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed, captions switch (off by default).")]

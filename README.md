@@ -17,6 +17,7 @@ Burned-in captions are off by default.
 | `list_clips(folder)` | every video in a local folder: name, duration, resolution, fps, codec, audio, role (`clip`, or `motion` when it has an alpha channel) |
 | `probe_clip(path)` | the same facts for one file |
 | `list_templates()` | the commented beats brief and the timed voice-over script that ship in the binary |
+| `animate_svg(svg_path, animation, duration_s, fps?, width?, easing?, hold_s?, exit?, exit_s?, codec?, output)` | turns an SVG (logo, icon, badge) into an alpha `.mov` motion graphic (QuickTime Animation or ProRes 4444) with a PNG preview; use it as an intro overlay or end card ([`examples/logo-intro/`](examples/logo-intro/)) |
 | `make_sample_clips(folder)` | a procedural sample library (4 clips + 2 alpha motion graphics, drawn by FFmpeg) to try the flow without footage |
 | `create_project(project_dir, clips_folder, motion_folder?, aspect, music, bpm?, music_file?, captions_burned_in)` | writes the project style, `promo.toml` |
 | `write_brief(project_dir, name, beats[], end_card?)` | writes `brief.toml` (one beat per idea: text, clip names, optional overlay; `extends` the style) and returns the resolved timeline and any missing files |
@@ -28,7 +29,23 @@ Burned-in captions are off by default.
 Finite choices are enums in the tool schemas: `aspect` = `9:16` · `16:9` · `1:1`, `music` = `procedural` · `file` ·
 `none`, `resolution` = `preview` · `draft` · `final`, `encoder` = `auto` · `nvenc` · `amf` · `qsv` · `vaapi` · `videotoolbox` ·
 `x264`,
-`cue` = `braam` · `hit` · `whoosh`.
+`cue` = `braam` · `hit` · `whoosh`, `animation` = `fade_scale` · `slide_up` · `pop` · `draw_on` · `spin` · `glow`,
+`easing` = `ease_out` · `ease_in_out` · `back` · `spring`, `fps` = `30` · `60`, `width` = `540` · `720` · `1080` ·
+`1440`, `codec` = `qtrle` · `prores4444`.
+
+### Animated SVG overlays
+
+`animate_svg` parses the SVG once (usvg, system fonts for any `<text>`), rasterises it once with resvg at the largest
+size the animation reaches, and draws each frame from that raster with an eased transform and opacity (`glow` adds a
+blurred bloom and a slow pulse while it holds). `draw_on` rewrites the stroke dash of every stroked path per frame
+(strokes draw in a slight stagger, then fills fade in) and refuses an SVG without strokes. The exit is the chosen preset
+played backwards. Save the `.mov` in the project's motion folder and use the returned `asset_name` as a beat's
+`overlay.asset` (intro logo, `delay_s = 0`) or as `end_card.asset` (drawn uncropped: give it `x` / `y` / `w`).
+
+Limits: SVG features resvg does not support are not drawn (scripts, SMIL / CSS animations, `foreignObject`); text needs
+an installed font (or outlined text), otherwise the tool fails rather than drawing nothing; in `draw_on`, embedded
+raster images and pattern contents are not drawn on but shown from the first frame, and existing dash patterns are
+replaced.
 
 ## Install
 
@@ -133,6 +150,7 @@ see [`docs/PROMO_VIDEOS.md`](docs/PROMO_VIDEOS.md) for the config reference.
 | `crates/datavid` | the media layer: SVG frame helpers, easing, procedural audio and EBU R128 mastering, ffmpeg/ffprobe helpers, QA reports |
 | `docs/PROMO_VIDEOS.md` | the config reference and the step-by-step guide |
 | `examples/sample/` | a complete brief for the procedural sample library |
+| `examples/logo-intro/` | an original SVG logo animated into an intro overlay and an end card for the sample ad |
 | `templates/promo/` | a starting `brief.toml` and a timed voice-over script |
 | `fonts/` | Pixelify Sans Bold (OFL), the default caption font, embedded in the binary |
 

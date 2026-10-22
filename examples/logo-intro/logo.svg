@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <!-- An original mark made for this example (a reel ring, its spokes and a play spark). No third-party assets. -->
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#f72585"/>
+    </linearGradient>
+  </defs>
+  <circle cx="200" cy="200" r="150" fill="none" stroke="url(#ring)" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="200" cy="200" r="104" fill="#1b1b3a" fill-opacity="0.85" stroke="#7597de" stroke-width="8"/>
+  <g stroke="#7597de" stroke-width="8" stroke-linecap="round">
+    <path d="M200 96 L200 128"/>
+    <path d="M290 252 L262 236"/>
+    <path d="M110 252 L138 236"/>
+  </g>
+  <path d="M176 150 L262 200 L176 250 Z" fill="#ffd166" stroke="#ffd166" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M318 74 L330 50 L342 74 L366 86 L342 98 L330 122 L318 98 L294 86 Z" fill="#3ee8b5" stroke="#3ee8b5" stroke-width="4" stroke-linejoin="round"/>
+</svg>

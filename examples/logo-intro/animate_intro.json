@@ -1,0 +1,2 @@
+{"svg_path": "<repo>/examples/logo-intro/logo.svg", "animation": "pop", "easing": "back", "duration_s": 0.8,
+ "hold_s": 1.2, "exit": "fade_scale", "exit_s": 0.4, "fps": 60, "width": 1080, "output": "<media>/logo_intro.mov"}
