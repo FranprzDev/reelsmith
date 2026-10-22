@@ -23,9 +23,11 @@ Burned-in captions are off by default.
 | `render(config, resolution, encoder?, captions_burned_in?, out?, wait_seconds?)` | `preview` 360p, `draft` 720p or `final` 1080p; returns the MP4, SRT and QA report, or a `job_id` while it is still running |
 | `get_status(job_id, wait_seconds?)` | the state of a render (`running`, `succeeded`, `qa_failed`, `failed`) and its result |
 | `get_qa(config, resolution, video?)` | re-run QA on a rendered MP4 |
+| `system_info(encoder?)` | the GPU / encoder backend this machine renders with, every probe tried and why it was chosen |
 
 Finite choices are enums in the tool schemas: `aspect` = `9:16` · `16:9` · `1:1`, `music` = `procedural` · `file` ·
-`none`, `resolution` = `preview` · `draft` · `final`, `encoder` = `auto` · `nvenc` · `videotoolbox` · `x264`,
+`none`, `resolution` = `preview` · `draft` · `final`, `encoder` = `auto` · `nvenc` · `amf` · `qsv` · `vaapi` · `videotoolbox` ·
+`x264`,
 `cue` = `braam` · `hit` · `whoosh`.
 
 ## Install
@@ -40,8 +42,11 @@ Finite choices are enums in the tool schemas: `aspect` = `9:16` · `16:9` · `1:
    from source (below).
 3. **Register it with your host** (next section) and restart the host.
 
-Reelsmith picks the encoder for the delivery MP4 automatically: NVENC on an NVIDIA GPU (for example an RTX 4060 on
-Windows), VideoToolbox on macOS, libx264 otherwise. Pass `encoder` to `render` to force one.
+Reelsmith detects the GPU by test-opening each hardware encoder with a one-frame FFmpeg encode, in this order:
+NVIDIA NVENC (+ CUDA decode), AMD AMF on Windows / VA-API on Linux, Intel QSV on Windows / VA-API on Linux, Apple
+VideoToolbox, then libx264 on the CPU. The paired hardware decoder (CUDA, D3D11VA, VA-API, VideoToolbox) cuts the
+source clips when it opens, otherwise they are decoded on the CPU. `system_info` and every `render` result report the
+backend, each probe and the reason; pass `encoder` to `render` to force one (an error if it cannot open).
 
 ## Configure your MCP host
 
