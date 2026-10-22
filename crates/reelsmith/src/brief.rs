@@ -210,7 +210,8 @@ fn beat_value(b: &BeatArg) -> Result<Value> {
             ("delay", num(o.delay_s)),
             ("dur", num(o.dur_s)),
             ("crop", Some(match o.crop {
-                Some(c) => Value::Array(c.iter().map(|v| Value::Float(*v)).collect()),
+                // the template reads the box as whole asset pixels
+                Some(c) => Value::Array(c.iter().map(|v| Value::Integer(v.round() as i64)).collect()),
                 None => Value::String("auto".into()),
             })),
             ("x", num(o.x)),
