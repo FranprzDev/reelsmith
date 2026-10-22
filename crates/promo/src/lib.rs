@@ -9,18 +9,20 @@
 //! * [`audio`]: music bed + cut hits + cues + overlay sfx + voice-over, mastered to −14 LUFS.
 //! * [`frame`]: one SVG per frame for fframes (push-in, vignette, overlays, caption pop, flashes).
 //! * [`qa`]: loudness, true peak, black frames, caption size, contact sheet.
-//! * [`progress`] / [`error`]: NDJSON progress events and stable exit codes for callers (an upload app).
-//!
-//! The fframes render itself (chunked, resumable) lives in the `promo` binary.
+//! * [`render`]: the chunked, resumable fframes render and the final mux.
+//! * [`pipeline`]: the whole build for one config, shared by the `promo` CLI and the Reelsmith MCP server.
+//! * [`progress`] / [`error`]: NDJSON progress events and stable exit codes for callers.
 pub mod audio;
 pub mod config;
 pub mod error;
 pub mod font;
 pub mod frame;
+pub mod pipeline;
 pub mod plan;
 pub mod plate;
 pub mod progress;
 pub mod qa;
+pub mod render;
 pub mod script;
 
 pub use config::{Aspect, Res};

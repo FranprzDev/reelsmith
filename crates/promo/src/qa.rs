@@ -8,11 +8,11 @@ use crate::plan::Plan;
 use anyhow::Result;
 use datavid::media;
 use datavid::qa::Report;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QaSummary {
     pub ok: bool,
     pub duration_s: f64,
