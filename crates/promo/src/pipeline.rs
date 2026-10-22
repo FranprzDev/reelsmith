@@ -22,7 +22,7 @@ pub struct BuildOptions {
     pub retries: usize,
     pub qa: bool,
     pub encoder: EncoderChoice,
-    /// how many plates / chunks run at once (see [`crate::pool::default_jobs`])
+    /// how many plates / render chunks run at once (see [`crate::pool::default_jobs`])
     pub jobs: usize,
 }
 
@@ -140,7 +140,7 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
 
     ev.stage(Stage::Render, Status::Start);
     let fb = crate::frame::FrameBuilder::new(p.clone())?;
-    render::render_all(&fb, r, o.chunk_frames, o.retries, None, ev)?;
+    render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, ev)?;
     ev.stage(Stage::Render, Status::Done);
 
     ev.stage(Stage::Mux, Status::Start);

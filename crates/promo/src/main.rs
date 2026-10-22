@@ -214,7 +214,7 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
             plate::measure_crops(&mut p)?;
             p.save()?;
             let fb = promo::frame::FrameBuilder::new(p)?;
-            render::render_all(&fb, o.res, o.chunk_frames, o.retries, o.chunk, ev)?;
+            render::render_all(&fb, o.res, o.chunk_frames, o.retries, o.chunk, o.jobs, ev)?;
             Ok(Exit::Ok)
         }
         "mux" => {
