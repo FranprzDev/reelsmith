@@ -1,8 +1,10 @@
 //! The fframes render: a `Video` per canvas shape, a chunked and resumable full render (each chunk its own process with
 //! only its own rasters, several chunks at once, retried when killed) and the final join + encode + audio mux.
 //!
-//! Chunks are lossless FFV1 in Matroska (a codec every FFmpeg build has, so the render works the same on every OS); the
-//! delivery H.264 is encoded once at the mux with the encoder [`crate::encode`] picked.
+//! Chunks are lossless FFVHuff in Matroska (built into every FFmpeg, so the render works the same on every OS). It
+//! encodes and decodes about 5x faster than FFV1 for ~45% bigger files, and the mux decodes every chunk on one thread,
+//! so the intermediate codec sits on the critical path. The delivery H.264 is encoded once at the mux with the encoder
+//! [`crate::encode`] picked.
 //!
 //! A chunk is skipped when its part exists and its key (the SVG of every frame in it plus the plate stamps it draws)
 //! is unchanged, so after an edit only the touched chunks render again.
@@ -20,6 +22,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// container of the lossless chunks
 const PART_EXT: &str = "mkv";
+/// the lossless codec of the chunks (part of the chunk key, so parts made with another codec are re-rendered)
+const PART_CODEC: &str = "ffvhuff";
 
 /// set on the child process that hands a frame range to the fframes CLI
 pub const PASSTHROUGH: &str = "PROMO_PASSTHROUGH";
@@ -64,7 +68,7 @@ fn run_cli<'m, const W: usize, const H: usize>(fb: FrameBuilder, mp: &'m dyn ffr
         &video,
         fframes::RenderOptions {
             media: Some(mp),
-            video_encoder_options: fframes::EncoderOptions { preferred_encoder: Some("ffv1"), ..Default::default() },
+            video_encoder_options: fframes::EncoderOptions { preferred_encoder: Some(PART_CODEC), ..Default::default() },
             ..Default::default()
         },
     )
@@ -104,7 +108,7 @@ fn stamp(dir: &Path, name: &str) -> String {
 fn chunk_key(fb: &FrameBuilder, r: Res, a: usize, b: usize) -> String {
     let p = &fb.plan;
     let fd = p.frames_dir(r);
-    let mut s = format!("{} {}x{} ", r.tag(), p.out_size(r).0, p.out_size(r).1);
+    let mut s = format!("{PART_CODEC} {} {}x{} ", r.tag(), p.out_size(r).0, p.out_size(r).1);
     for (i, sh) in p.shots.iter().enumerate() {
         if p.fi(sh.t0) < b && p.fi(sh.t1) > a {
             s.push_str(&stamp(&fd, &format!(".shot_{i:03}")));

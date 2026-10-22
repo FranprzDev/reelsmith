@@ -9,7 +9,7 @@
 //! * [`audio`]: music bed + cut hits + cues + overlay sfx + voice-over, mastered to −14 LUFS.
 //! * [`frame`]: one SVG per frame for fframes (push-in, vignette, overlays, caption pop, flashes).
 //! * [`qa`]: loudness, true peak, black frames, caption size, contact sheet.
-//! * [`render`]: the chunked, resumable fframes render (lossless FFV1 chunks) and the final mux.
+//! * [`render`]: the chunked, resumable fframes render (lossless FFVHuff chunks) and the final mux.
 //! * [`encode`]: the delivery encoder (NVENC, VideoToolbox or libx264 through the `ffmpeg` on PATH).
 //! * [`pool`]: the bounded worker pool that runs plates and render chunks in parallel.
 //! * [`pipeline`]: the whole build for one config, shared by the `promo` CLI and the Reelsmith MCP server.
