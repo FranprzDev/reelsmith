@@ -34,7 +34,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -82,7 +82,7 @@ jobs:
           # the server exits when stdin closes; the step timeout guards a hang (macOS has no `timeout`)
           (cat mcp_in.jsonl; sleep 5) | "$bin" | tee mcp.jsonl || true
           grep -q '"render"' mcp.jsonl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: reelsmith-${{ matrix.target }}
           path: dist/*.*
@@ -93,7 +93,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
