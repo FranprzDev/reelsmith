@@ -14,10 +14,12 @@
 //!
 //! flags: --preview (360p) | --final (1080p) | default 720p draft
 //!        --captions on|off  --clips DIR  --motion DIR  --out FILE  --out-dir DIR  --build-dir DIR
+//!        --encoder auto|nvenc|videotoolbox|x264 (auto)
 //!        --chunk-frames N (60)  --retries N (3)  --no-qa  --json (NDJSON progress + result on stdout)
 //! exit:  0 ok, 1 failed, 2 bad config/usage, 3 QA failed, 4 missing input
 //! ```
 use anyhow::Result;
+use promo::encode::EncoderChoice;
 use promo::error::{ConfigError, Exit};
 use promo::pipeline::{self, BuildOptions, BuildOutcome};
 use promo::plate::Only;
@@ -41,6 +43,7 @@ struct Opts {
     chunk_frames: usize,
     retries: usize,
     no_qa: bool,
+    encoder: EncoderChoice,
 }
 
 fn parse(args: &[String]) -> Result<Opts, ConfigError> {
@@ -59,6 +62,15 @@ fn parse(args: &[String]) -> Result<Opts, ConfigError> {
                     "off" | "false" | "0" => false,
                     v => return Err(ConfigError(format!("--captions takes on|off, got {v}"))),
                 })
+            }
+            "--encoder" => {
+                o.encoder = match val(&mut it, a)?.as_str() {
+                    "auto" => EncoderChoice::Auto,
+                    "nvenc" => EncoderChoice::Nvenc,
+                    "videotoolbox" => EncoderChoice::Videotoolbox,
+                    "x264" => EncoderChoice::X264,
+                    v => return Err(ConfigError(format!("--encoder takes auto|nvenc|videotoolbox|x264, got {v}"))),
+                }
             }
             "--clips" => o.ov.clips = Some(abs(&val(&mut it, a)?)),
             "--motion" => o.ov.motion = Some(abs(&val(&mut it, a)?)),
@@ -101,7 +113,7 @@ fn load(cfg: &Path, o: &Opts) -> Result<Plan> {
 }
 
 fn build_options(o: &Opts) -> BuildOptions {
-    BuildOptions { res: o.res, overrides: o.ov.clone(), out: o.out.clone(), chunk_frames: o.chunk_frames, retries: o.retries, qa: !o.no_qa }
+    BuildOptions { res: o.res, overrides: o.ov.clone(), out: o.out.clone(), chunk_frames: o.chunk_frames, retries: o.retries, qa: !o.no_qa, encoder: o.encoder }
 }
 
 /// One build, with its result printed as the last NDJSON event.
@@ -206,7 +218,7 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
         "mux" => {
             let p = load(&config_arg(o)?, o)?;
             let out = o.out.clone().unwrap_or_else(|| p.default_out(o.res));
-            render::mux(&p, o.res, o.chunk_frames, &out)?;
+            render::mux(&p, o.res, o.chunk_frames, o.encoder.resolve()?, &out)?;
             ev.log(&format!("mux: {}", out.display()));
             Ok(Exit::Ok)
         }

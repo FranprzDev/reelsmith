@@ -1,16 +1,23 @@
 //! The fframes render: a `Video` per canvas shape, a chunked and resumable full render (each chunk its own process with
-//! only its own rasters, retried when killed) and the final join + audio mux.
+//! only its own rasters, retried when killed) and the final join + encode + audio mux.
+//!
+//! Chunks are lossless FFV1 in Matroska (a codec every FFmpeg build has, so the render works the same on every OS); the
+//! delivery H.264 is encoded once at the mux with the encoder [`crate::encode`] picked.
 //!
 //! A chunk is skipped when its part exists and its key (the SVG of every frame in it plus the plate stamps it draws)
 //! is unchanged, so after an edit only the touched chunks render again.
 use anyhow::{Context, Result};
 use fframes::{AudioMap, Color, Duration, FFramesContext, Frame, Svgr, Video};
 use crate::config::{Aspect, Res};
+use crate::encode::Encoder;
 use crate::frame::FrameBuilder;
 use crate::plan::{Plan, key_of};
 use crate::progress::{Events, Stage};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+
+/// container of the lossless chunks
+const PART_EXT: &str = "mkv";
 
 /// set on the child process that hands a frame range to the fframes CLI
 pub const PASSTHROUGH: &str = "PROMO_PASSTHROUGH";
@@ -55,7 +62,7 @@ fn run_cli<'m, const W: usize, const H: usize>(fb: FrameBuilder, mp: &'m dyn ffr
         &video,
         fframes::RenderOptions {
             media: Some(mp),
-            video_encoder_options: fframes::EncoderOptions { preferred_encoder: Some("libx264"), codec_params: Some(&[("crf", "18"), ("preset", "veryfast")]), ..Default::default() },
+            video_encoder_options: fframes::EncoderOptions { preferred_encoder: Some("ffv1"), ..Default::default() },
             ..Default::default()
         },
     )
@@ -120,7 +127,7 @@ pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize),
     let p = &fb.plan;
     let work = chunks_dir(p, r);
     std::fs::create_dir_all(&work)?;
-    let part = work.join(format!("part_{k:03}.mp4"));
+    let part = work.join(format!("part_{k:03}.{PART_EXT}"));
     let key_file = work.join(format!("part_{k:03}.key"));
     let key = chunk_key(fb, r, a, b);
     if part.exists() && std::fs::read_to_string(&key_file).is_ok_and(|s| s == key) {
@@ -143,7 +150,7 @@ pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize),
     if fb.font.is_some() {
         std::fs::copy(&p.font, media.join(p.font.file_name().unwrap()))?;
     }
-    let tmp = work.join(format!("part_{k:03}.tmp.mp4"));
+    let tmp = work.join(format!("part_{k:03}.tmp.{PART_EXT}"));
     let log = work.join(format!("part_{k:03}.log"));
     let mut last = String::new();
     for attempt in 1..=retries.max(1) {
@@ -195,21 +202,22 @@ pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize
     Ok(parts)
 }
 
-/// Join the chunks without re-encoding and mux the mastered audio. The MP4 is written to the system temp folder and
-/// then copied (`+faststart` rewrites the file in place, which fails on some network/FUSE filesystems).
-pub fn mux(p: &Plan, r: Res, chunk_frames: usize, out: &Path) -> Result<()> {
+/// Join the chunks, encode the delivery H.264 with `enc` and mux the mastered audio. The MP4 is written to the system
+/// temp folder and then copied (`+faststart` rewrites the file in place, which fails on some network/FUSE filesystems).
+pub fn mux(p: &Plan, r: Res, chunk_frames: usize, enc: Encoder, out: &Path) -> Result<()> {
     let work = chunks_dir(p, r);
     let n = ranges(p, chunk_frames).len();
     let mut list = String::new();
     for k in 0..n {
-        let part = work.join(format!("part_{k:03}.mp4"));
+        let part = work.join(format!("part_{k:03}.{PART_EXT}"));
         anyhow::ensure!(part.exists(), "chunk {k} is not rendered yet (promo render)");
         list.push_str(&format!("file '{}'\n", part.display()));
     }
     std::fs::write(work.join("parts.txt"), list)?;
     anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
     let tmp = std::env::temp_dir().join(format!("promo_{}_{}.mp4", p.name, std::process::id()));
-    let args: Vec<String> = vec![
+    let (w, h) = p.out_size(r);
+    let mut args: Vec<String> = vec![
         "-f".into(),
         "concat".into(),
         "-safe".into(),
@@ -222,8 +230,9 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, out: &Path) -> Result<()> {
         "0:v".into(),
         "-map".into(),
         "1:a".into(),
-        "-c:v".into(),
-        "copy".into(),
+    ];
+    args.extend(enc.args(w, h, p.fps));
+    args.extend([
         "-c:a".into(),
         "aac".into(),
         "-b:a".into(),
@@ -233,8 +242,8 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, out: &Path) -> Result<()> {
         "-movflags".into(),
         "+faststart".into(),
         tmp.display().to_string(),
-    ];
-    datavid::media::ffmpeg(&args, "the concat / audio mux")?;
+    ]);
+    datavid::media::ffmpeg(&args, &format!("the concat / {} encode / audio mux", enc.ffmpeg_name()))?;
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d)?;
     }
