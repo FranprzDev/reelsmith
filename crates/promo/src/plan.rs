@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-const CLIP_EXTS: &[&str] = &["mp4", "mov", "mkv", "webm", "m4v"];
-const MOTION_EXTS: &[&str] = &["mov", "webm", "mp4", "mkv"];
+pub const CLIP_EXTS: &[&str] = &["mp4", "mov", "mkv", "webm", "m4v"];
+pub const MOTION_EXTS: &[&str] = &["mov", "webm", "mp4", "mkv"];
 /// time comparisons (s)
 const EPS: f64 = 1e-6;
 

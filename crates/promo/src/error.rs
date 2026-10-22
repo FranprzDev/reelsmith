@@ -34,6 +34,7 @@ impl std::error::Error for QaFailed {}
 
 /// Process exit codes of the `promo` binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Exit {
     /// success

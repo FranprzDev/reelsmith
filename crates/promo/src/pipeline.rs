@@ -26,6 +26,7 @@ pub struct BuildOptions {
 
 /// What a resolved config will render.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PlanSummary {
     pub name: String,
     pub aspect: Aspect,
@@ -46,6 +47,7 @@ pub struct PlanSummary {
 
 /// The result of one build (also written next to the MP4 as `<name>.result.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BuildOutcome {
     pub ok: bool,
     pub exit: Exit,

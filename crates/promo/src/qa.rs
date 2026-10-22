@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct QaSummary {
     pub ok: bool,
     pub duration_s: f64,
