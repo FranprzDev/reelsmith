@@ -14,7 +14,7 @@
 //!
 //! flags: --preview (360p) | --final (1080p) | default 720p draft
 //!        --captions on|off  --clips DIR  --motion DIR  --out FILE  --out-dir DIR  --build-dir DIR
-//!        --encoder auto|nvenc|videotoolbox|x264 (auto)
+//!        --encoder auto|nvenc|amf|qsv|vaapi|videotoolbox|x264 (auto)
 //!        --chunk-frames N (60)  --retries N (3)  --jobs N (cores)  --no-qa  --json (NDJSON progress + result on stdout)
 //! exit:  0 ok, 1 failed, 2 bad config/usage, 3 QA failed, 4 missing input
 //! ```
@@ -68,9 +68,12 @@ fn parse(args: &[String]) -> Result<Opts, ConfigError> {
                 o.encoder = match val(&mut it, a)?.as_str() {
                     "auto" => EncoderChoice::Auto,
                     "nvenc" => EncoderChoice::Nvenc,
+                    "amf" => EncoderChoice::Amf,
+                    "qsv" => EncoderChoice::Qsv,
+                    "vaapi" => EncoderChoice::Vaapi,
                     "videotoolbox" => EncoderChoice::Videotoolbox,
                     "x264" => EncoderChoice::X264,
-                    v => return Err(ConfigError(format!("--encoder takes auto|nvenc|videotoolbox|x264, got {v}"))),
+                    v => return Err(ConfigError(format!("--encoder takes auto|nvenc|amf|qsv|vaapi|videotoolbox|x264, got {v}"))),
                 }
             }
             "--clips" => o.ov.clips = Some(abs(&val(&mut it, a)?)),
@@ -199,7 +202,9 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
                 Some("overlays") => Only::Overlays,
                 Some(x) => return Err(ConfigError(format!("plate takes shots|overlays, got {x}")).into()),
             };
-            plate::run(&mut p, o.res, only, o.jobs, ev)?;
+            let backend = o.encoder.resolve()?;
+            ev.log(&backend.summary());
+            plate::run(&mut p, o.res, only, o.jobs, &backend, ev)?;
             p.save()?;
             Ok(Exit::Ok)
         }
@@ -220,7 +225,9 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
         "mux" => {
             let p = load(&config_arg(o)?, o)?;
             let out = o.out.clone().unwrap_or_else(|| p.default_out(o.res));
-            render::mux(&p, o.res, o.chunk_frames, o.encoder.resolve()?, &out)?;
+            let backend = o.encoder.resolve()?;
+            ev.log(&backend.summary());
+            render::mux(&p, o.res, o.chunk_frames, &backend, &out)?;
             ev.log(&format!("mux: {}", out.display()));
             Ok(Exit::Ok)
         }

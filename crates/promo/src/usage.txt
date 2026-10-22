@@ -22,7 +22,8 @@ overrides
   --captions on|off          burn in captions (default: the config's captions.enabled, which defaults to off)
   --clips DIR  --motion DIR  source folders (win over paths.clips / paths.motion)
   --out FILE  --out-dir DIR  --build-dir DIR
-  --encoder auto|nvenc|videotoolbox|x264   delivery H.264 encoder (auto: NVENC, VideoToolbox, else libx264)
+  --encoder auto|nvenc|amf|qsv|vaapi|videotoolbox|x264
+                             GPU / encoder backend (auto: the first hardware encoder that opens, else libx264)
   --chunk-frames N (60)  --retries N (3)  --no-qa
   --jobs N                   plates cut and chunks rendered at once (default: every core)
 

@@ -15,7 +15,7 @@ host restarted. In Codex keep `tool_timeout_sec = 900`. Pick a demo folder, here
 > **Type:** `What tools does reelsmith give you?`
 
 The host lists the tools: `list_clips`, `probe_clip`, `list_templates`, `make_sample_clips`, `create_project`,
-`write_brief`, `render`, `get_status`, `get_qa`.
+`write_brief`, `render`, `get_status`, `get_qa`, `system_info`.
 
 ### 0:10 — A clip library (20 s)
 

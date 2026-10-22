@@ -95,7 +95,7 @@ promo plate [shots|overlays] | audio | render [--chunk K] | mux [--out F] | srt 
 --captions on|off                 override captions.enabled
 --clips DIR --motion DIR          override the media folders
 --out FILE --out-dir DIR --build-dir DIR
---encoder auto|nvenc|videotoolbox|x264   delivery encoder (auto: NVENC, VideoToolbox, else libx264)
+--encoder auto|nvenc|amf|qsv|vaapi|videotoolbox|x264   GPU / encoder backend (auto: first that opens, else libx264)
 --chunk-frames N (60) --retries N (3) --no-qa
 --jobs N                          plates cut and chunks rendered at once (default: every core)
 --json                            machine-readable progress on stdout
@@ -136,8 +136,10 @@ logs:
   Linux and macOS the FFmpeg libraries come from a static, portable prebuilt archive (fframes `build-portable`), so no
   system codec libraries are linked.
 - **Encoding.** Chunks are rendered losslessly (FFVHuff in Matroska) and the delivery H.264 is encoded once at the mux by
-  the `ffmpeg` on PATH: `--encoder auto` (default) uses NVENC when an NVIDIA GPU answers, VideoToolbox on macOS and
-  libx264 otherwise; `--encoder nvenc|videotoolbox|x264` forces one and fails clearly when it cannot open.
+  the `ffmpeg` on PATH: `--encoder auto` (default) test-opens NVENC, AMF / QSV (Windows) or VA-API (Linux) and
+  VideoToolbox (macOS) and falls back to libx264; `--encoder <name>` forces one and fails clearly when it cannot open.
+  The backend's hardware decoder cuts the source clips when it opens. Presets follow the tier (preview fast, final
+  best quality).
 - **Plates.** fframes takes no per-frame raster input from a video file in this harness, so `plate` caches every frame
   as JPG (shots, at the output size) and RGBA PNG (overlays, cropped, at their drawn width). Each chunk process only
   loads the rasters it draws (hard-linked into a per-chunk folder), which keeps memory flat.
