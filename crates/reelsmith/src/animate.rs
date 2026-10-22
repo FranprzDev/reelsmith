@@ -140,7 +140,7 @@ pub enum AlphaCodec {
     /// QuickTime Animation (`qtrle`, 8-bit ARGB, lossless): what the promo motion graphics use
     #[default]
     Qtrle,
-    /// Apple ProRes 4444 (`prores_ks`, 10-bit + alpha): smaller, for editors such as Premiere or Resolve
+    /// Apple ProRes 4444 (`prores_ks`, 10-bit + alpha), for editors such as Premiere or Resolve
     Prores4444,
 }
 

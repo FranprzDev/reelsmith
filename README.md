@@ -45,7 +45,9 @@ played backwards. Save the `.mov` in the project's motion folder and use the ret
 Limits: SVG features resvg does not support are not drawn (scripts, SMIL / CSS animations, `foreignObject`); text needs
 an installed font (or outlined text), otherwise the tool fails rather than drawing nothing; in `draw_on`, embedded
 raster images and pattern contents are not drawn on but shown from the first frame, and existing dash patterns are
-replaced.
+replaced. `qtrle` is lossless run-length coding, so a long `glow` hold (every pixel changes as it pulses) makes a large
+file (about 150 MB for 3.3 s at 1080 px; ProRes 4444 is larger still): keep glow holds short or use a smaller
+`width`.
 
 ## Install
 
