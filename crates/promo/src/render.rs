@@ -5,11 +5,10 @@
 //! is unchanged, so after an edit only the touched chunks render again.
 use anyhow::{Context, Result};
 use fframes::{AudioMap, Color, Duration, FFramesContext, Frame, Svgr, Video};
-use promo::config::Aspect;
-use promo::frame::FrameBuilder;
-use promo::plan::{Plan, key_of};
-use promo::progress::{Events, Stage};
-use promo::Res;
+use crate::config::{Aspect, Res};
+use crate::frame::FrameBuilder;
+use crate::plan::{Plan, key_of};
+use crate::progress::{Events, Stage};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -27,7 +26,7 @@ struct PromoVideo<const W: usize, const H: usize> {
 }
 
 impl<const W: usize, const H: usize> Video for PromoVideo<W, H> {
-    const FPS: usize = promo::config::FPS;
+    const FPS: usize = crate::config::FPS;
     const WIDTH: usize = W;
     const HEIGHT: usize = H;
     const BACKGROUND_COLOR: Color = Color::BLACK;

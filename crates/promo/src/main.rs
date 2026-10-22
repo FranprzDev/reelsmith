@@ -17,14 +17,13 @@
 //!        --chunk-frames N (60)  --retries N (3)  --no-qa  --json (NDJSON progress + result on stdout)
 //! exit:  0 ok, 1 failed, 2 bad config/usage, 3 QA failed, 4 missing input
 //! ```
-mod render;
-
 use anyhow::Result;
 use promo::error::{ConfigError, Exit};
+use promo::pipeline::{self, BuildOptions, BuildOutcome};
 use promo::plate::Only;
-use promo::progress::{Events, Stage, Status};
-use promo::{Overrides, Plan, Res, audio, plate, qa, script};
-use serde_json::{Value, json};
+use promo::progress::{Events, Stage};
+use promo::{Overrides, Plan, Res, audio, plate, qa, render};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -98,9 +97,18 @@ fn config_arg(o: &Opts) -> Result<PathBuf, ConfigError> {
 }
 
 fn load(cfg: &Path, o: &Opts) -> Result<Plan> {
-    let mut p = Plan::from_file(cfg, &o.ov)?;
-    p.load_crops()?;
-    Ok(p)
+    pipeline::load(cfg, &o.ov)
+}
+
+fn build_options(o: &Opts) -> BuildOptions {
+    BuildOptions { res: o.res, overrides: o.ov.clone(), out: o.out.clone(), chunk_frames: o.chunk_frames, retries: o.retries, qa: !o.no_qa }
+}
+
+/// One build, with its result printed as the last NDJSON event.
+fn build(cfg: &Path, o: &Opts, ev: &Events) -> Result<BuildOutcome> {
+    let r = pipeline::build(cfg, &build_options(o), ev)?;
+    ev.result(&serde_json::to_value(&r)?);
+    Ok(r)
 }
 
 fn main() -> ExitCode {
@@ -139,14 +147,13 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
             Ok(Exit::Ok)
         }
         "build" => {
-            let r = build(&config_arg(o)?, o, ev)?;
-            Ok(if r["ok"] == true { Exit::Ok } else { Exit::QaFailed })
+            Ok(build(&config_arg(o)?, o, ev)?.exit)
         }
         "batch" => batch(o, ev),
         "check" => {
             let p = load(&config_arg(o)?, o)?;
             let missing = p.missing_inputs();
-            let s = summary(&p, o.res);
+            let s = pipeline::summary(&p, o.res);
             ev.log(&format!(
                 "{}: {} {:.2} s, {} shots, {} overlays, {} captions (burned in: {}), {} flashes, music {:?}",
                 p.name,
@@ -205,7 +212,7 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
         }
         "srt" => {
             let p = load(&config_arg(o)?, o)?;
-            let out = write_srt(&p)?;
+            let out = pipeline::write_srt(&p)?;
             ev.log(&format!("srt: {}", out.as_ref().map(|p| p.display().to_string()).unwrap_or("no captions".into())));
             Ok(Exit::Ok)
         }
@@ -213,96 +220,12 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
             let p = load(&config_arg(o)?, o)?;
             let v = o.pos.get(1).map(|s| abs(s)).or(o.out.clone()).unwrap_or_else(|| p.default_out(o.res));
             let s = qa::run(&p, o.res, &v)?;
-            print_qa(ev, &s);
+            pipeline::log_qa(ev, &s);
             ev.result(&json!({"ok": s.ok, "qa": s}));
             Ok(if s.ok { Exit::Ok } else { Exit::QaFailed })
         }
         c => Err(ConfigError(format!("unknown command `{c}` (promo help)")).into()),
     }
-}
-
-fn summary(p: &Plan, r: Res) -> Value {
-    let (w, h) = p.out_size(r);
-    json!({"name": p.name, "aspect": p.aspect, "resolution": r, "width": w, "height": h, "seconds": p.seconds, "frames": p.frames(),
-        "shots": p.shots.len(), "overlays": p.overlays.len(), "captions": p.captions.len(), "captions_burned_in": p.captions_on,
-        "flashes": p.flashes, "music": p.music.kind, "voiceover": p.voiceover.is_some(), "build_dir": p.build_dir})
-}
-
-fn print_qa(ev: &Events, s: &qa::QaSummary) {
-    ev.log(&format!(
-        "qa: {} — {:.3} s, {}x{}, {:.2} LUFS, {:.2} dBTP, black frames: {}, report {}",
-        if s.ok { "PASS" } else { "FAIL" },
-        s.duration_s,
-        s.width,
-        s.height,
-        s.integrated_lufs,
-        s.true_peak_dbtp,
-        s.black_frames.len(),
-        s.report
-    ));
-    for f in &s.failures {
-        ev.log(&format!("  ✗ {f}"));
-    }
-}
-
-fn write_srt(p: &Plan) -> Result<Option<PathBuf>> {
-    if p.captions.is_empty() {
-        return Ok(None);
-    }
-    std::fs::create_dir_all(&p.out_dir)?;
-    let out = p.out_dir.join(format!("{}.srt", p.name));
-    std::fs::write(&out, script::to_srt(&p.captions))?;
-    Ok(Some(out))
-}
-
-/// The whole pipeline for one config. Returns the result object (also written next to the MP4 as `.result.json`).
-fn build(cfg: &Path, o: &Opts, ev: &Events) -> Result<Value> {
-    let r = o.res;
-    ev.stage(Stage::Check, Status::Start);
-    let mut p = load(cfg, o)?;
-    p.ensure_inputs()?;
-    ev.stage(Stage::Check, Status::Done);
-
-    ev.stage(Stage::Plate, Status::Start);
-    plate::run(&mut p, r, Only::All, ev)?;
-    p.save()?;
-    ev.stage(Stage::Plate, Status::Done);
-
-    ev.stage(Stage::Audio, Status::Start);
-    audio::run(&p, ev)?;
-    ev.stage(Stage::Audio, Status::Done);
-
-    ev.stage(Stage::Render, Status::Start);
-    let fb = promo::frame::FrameBuilder::new(p.clone())?;
-    render::render_all(&fb, r, o.chunk_frames, o.retries, None, ev)?;
-    ev.stage(Stage::Render, Status::Done);
-
-    ev.stage(Stage::Mux, Status::Start);
-    let out = o.out.clone().unwrap_or_else(|| p.default_out(r));
-    render::mux(&p, r, o.chunk_frames, &out)?;
-    ev.log(&format!("mux: {}", out.display()));
-    ev.stage(Stage::Mux, Status::Done);
-
-    ev.stage(Stage::Srt, Status::Start);
-    let srt = write_srt(&p)?;
-    ev.stage(Stage::Srt, Status::Done);
-
-    let qa_v = if o.no_qa {
-        ev.stage(Stage::Qa, Status::Skipped);
-        None
-    } else {
-        ev.stage(Stage::Qa, Status::Start);
-        let s = qa::run(&p, r, &out)?;
-        print_qa(ev, &s);
-        ev.stage(Stage::Qa, if s.ok { Status::Done } else { Status::Failed });
-        Some(s)
-    };
-    let ok = qa_v.as_ref().is_none_or(|s| s.ok);
-    let exit = if ok { Exit::Ok } else { Exit::QaFailed };
-    let res = json!({"ok": ok, "exit": exit, "code": exit as u8, "config": cfg, "output": out, "srt": srt, "plan": summary(&p, r), "qa": qa_v});
-    std::fs::write(out.with_extension("result.json"), serde_json::to_string_pretty(&res)?)?;
-    ev.result(&res);
-    Ok(res)
 }
 
 fn batch(o: &Opts, ev: &Events) -> Result<Exit> {
@@ -331,7 +254,7 @@ fn batch(o: &Opts, ev: &Events) -> Result<Exit> {
     for (i, c) in cfgs.iter().enumerate() {
         ev.log(&format!("batch: {}/{} {}", i + 1, cfgs.len(), c.display()));
         let (code, v) = match build(c, o, ev) {
-            Ok(v) => (if v["ok"] == true { Exit::Ok } else { Exit::QaFailed }, v),
+            Ok(r) => (r.exit, serde_json::to_value(&r)?),
             Err(e) => {
                 let code = Exit::of(&e);
                 ev.log(&format!("batch: {} failed: {e:#}", c.display()));
