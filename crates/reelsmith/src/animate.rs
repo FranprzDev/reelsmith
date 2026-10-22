@@ -306,7 +306,7 @@ fn check_text(g: &usvg::Group, source: &str) -> Result<()> {
     }
     let (total, ok) = shaped(g);
     if (source.contains("<text") && total == 0) || ok < total {
-        bail!(cfg("the SVG has text that no installed font could shape: convert the text to paths (outline it) or install its font".into()));
+        return Err(cfg("the SVG has text that no installed font could shape: convert the text to paths (outline it) or install its font".into()));
     }
     Ok(())
 }
@@ -329,7 +329,7 @@ fn blur(pm: &Pixmap, r: usize) -> Result<Pixmap> {
             let base = l * stride;
             for c in 0..4 {
                 let px = |i: isize| -> f32 { if i < 0 || i >= len as isize { 0.0 } else { src[base + i as usize * step + c] } };
-                let mut acc: f32 = (-(r as isize)..=r as isize).map(px).sum();
+                let mut acc: f32 = (-(r as isize)..=r as isize).map(|i| px(i)).sum();
                 for i in 0..len {
                     dst[base + i * step + c] = acc * norm;
                     acc += px(i as isize + r as isize + 1) - px(i as isize - r as isize);
@@ -411,7 +411,7 @@ fn path_length(d: &str) -> Result<f64> {
                     len += dist(prev, q[0]);
                     prev = q[0];
                 }
-                cur = *pts.last().unwrap_or(&cur);
+                cur = pts[pts.len() - 1];
                 i += 1 + 2 * n;
             }
             "Z" => {
@@ -454,7 +454,7 @@ impl DrawOn {
         }
         let stroked = paths.iter().filter(|p| p.length.is_some()).count();
         if stroked == 0 {
-            bail!(cfg("draw_on needs stroked paths (stroke=\"...\"), and this SVG has none: pick another animation".into()));
+            return Err(cfg("draw_on needs stroked paths (stroke=\"...\"), and this SVG has none: pick another animation".into()));
         }
         Ok(DrawOn { svg, paths, stroked })
     }
@@ -517,19 +517,19 @@ pub fn animate(a: &AnimateSvgArgs) -> Result<AnimatedSvg> {
     let hold = a.hold_s.unwrap_or(1.0);
     let exit_s = if a.exit.is_some() { a.exit_s.unwrap_or(dur) } else { 0.0 };
     if !(0.2..=10.0).contains(&dur) {
-        bail!(cfg(format!("duration_s must be between 0.2 and 10, got {dur}")));
+        return Err(cfg(format!("duration_s must be between 0.2 and 10, got {dur}")));
     }
     if !(0.0..=30.0).contains(&hold) {
-        bail!(cfg(format!("hold_s must be between 0 and 30, got {hold}")));
+        return Err(cfg(format!("hold_s must be between 0 and 30, got {hold}")));
     }
     if a.exit.is_some() && !(0.2..=10.0).contains(&exit_s) {
-        bail!(cfg(format!("exit_s must be between 0.2 and 10, got {exit_s}")));
+        return Err(cfg(format!("exit_s must be between 0.2 and 10, got {exit_s}")));
     }
     if a.exit_s.is_some() && a.exit.is_none() {
-        bail!(cfg("exit_s needs an exit animation".into()));
+        return Err(cfg("exit_s needs an exit animation".into()));
     }
     if a.output.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("mov") {
-        bail!(cfg(format!("output must be a .mov file, got {}", a.output.display())));
+        return Err(cfg(format!("output must be a .mov file, got {}", a.output.display())));
     }
 
     let source = std::fs::read_to_string(&a.svg_path).with_context(|| format!("reading {}", a.svg_path.display()))?;
@@ -550,7 +550,7 @@ pub fn animate(a: &AnimateSvgArgs) -> Result<AnimatedSvg> {
     let (rw, rh) = ((lay.aw * OVER).round().max(1.0) as u32, (lay.ah * OVER).round().max(1.0) as u32);
     let art = render_tree(&tree, rw, rh)?;
     if art.pixels().iter().all(|p| p.alpha() == 0) {
-        bail!(cfg(format!("{} renders as a fully transparent image (nothing to animate)", a.svg_path.display())));
+        return Err(cfg(format!("{} renders as a fully transparent image (nothing to animate)", a.svg_path.display())));
     }
     let uses_glow = a.animation == Animation::Glow || a.exit == Some(Animation::Glow);
     let glow = if uses_glow {
@@ -569,8 +569,9 @@ pub fn animate(a: &AnimateSvgArgs) -> Result<AnimatedSvg> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let preview = a.output.with_extension("preview.png");
+    let (size, rate) = (format!("{cw}x{ch}"), fps.to_string());
     let mut child = Command::new("ffmpeg")
-        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{cw}x{ch}"), "-framerate", &fps.to_string(), "-i", "-"])
+        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", size.as_str(), "-framerate", rate.as_str(), "-i", "-"])
         .args(encoder_args(a.codec))
         .arg(&a.output)
         .stdin(Stdio::piped())
