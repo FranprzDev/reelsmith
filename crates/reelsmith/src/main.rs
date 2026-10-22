@@ -6,6 +6,7 @@
 mod brief;
 mod clips;
 mod jobs;
+mod sample;
 mod server;
 
 use rmcp::ServiceExt;

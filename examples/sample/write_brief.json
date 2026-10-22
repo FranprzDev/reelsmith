@@ -1,0 +1,11 @@
+{
+  "name": "sample_ad",
+  "beats": [
+    {"text": "WHAT IF | YOUR SERVER | HAD A TRAILER?", "dur_s": 2.6, "clips": [{"name": "nebula", "in_s": 0.5}],
+     "overlay": {"asset": "badge", "delay_s": 0.2, "y": 260, "w": 760}},
+    {"text": "NEW WORLDS | EVERY WEEK", "flash": true, "clips": [{"name": "aurora", "in_s": 1.0, "zoom": [1.05, 1.18]}]},
+    {"text": "BUILD | WITH FRIENDS", "clips": [{"name": "cells", "in_s": 0.5, "dur_s": 1.0}, {"name": "grid", "in_s": 2.0}]},
+    {"text": "JOIN | TONIGHT", "flash": true, "cue": "braam", "clips": [{"name": "nebula", "in_s": 3.0}]}
+  ],
+  "end_card": {"clip": {"name": "aurora", "in_s": 2.0}, "asset": "cta", "dur_s": 3.5, "text": "SEE YOU THERE"}
+}

@@ -2,6 +2,7 @@
 use crate::brief::{self, BriefWritten, CreateProjectArgs, ProjectCreated, WriteBriefArgs};
 use crate::clips::{self, ClipInfo, ClipList};
 use crate::jobs::{JobStatus, Jobs};
+use crate::sample;
 use promo::encode::EncoderChoice;
 use promo::pipeline::{self, BuildOptions};
 use promo::qa::QaSummary;
@@ -28,7 +29,7 @@ const DEFAULT_WAIT_S: u64 = 45;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FolderArgs {
-    /// absolute path of a local folder with video files
+    /// absolute path of a local folder (with video files, or where the sample library goes)
     pub folder: PathBuf,
 }
 
@@ -137,6 +138,11 @@ impl Reelsmith {
     #[tool(description = "Probe one video file: duration, resolution, fps, codec, pixel format, audio, role.")]
     async fn probe_clip(&self, Parameters(a): Parameters<PathArgs>) -> Result<Json<ClipInfo>, String> {
         Ok(Json(blocking(move || clips::probe(&a.path)).await?))
+    }
+
+    #[tool(description = "Write a procedural sample library into a folder (4 clips drawn by FFmpeg: nebula, cells, aurora, grid; 2 alpha motion graphics with a short sound: badge, cta) and list it. Use it to try or demo the flow without footage.")]
+    async fn make_sample_clips(&self, Parameters(a): Parameters<FolderArgs>) -> Result<Json<ClipList>, String> {
+        Ok(Json(blocking(move || sample::make(&a.folder)).await?))
     }
 
     #[tool(description = "The starting templates shipped with Reelsmith (a commented beats brief and a timed voice-over script).")]

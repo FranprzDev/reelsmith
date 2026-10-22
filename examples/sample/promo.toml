@@ -1,0 +1,16 @@
+# Style of the sample project: the procedural clips and motion graphics in ./media (create them with the
+# make_sample_clips tool, or let the host do it: "make sample clips in <this folder>/media").
+[video]
+name = "sample"
+aspect = "9:16"
+
+[paths]
+clips = "media"
+motion = "media"
+out = "out"
+
+[captions]
+enabled = false
+
+[music]
+kind = "procedural"
