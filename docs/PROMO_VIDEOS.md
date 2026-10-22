@@ -135,7 +135,7 @@ logs:
 - **System packages**: `build-essential clang libclang-dev pkg-config libfontconfig-dev`, plus the `ffmpeg` CLI. On
   Linux and macOS the FFmpeg libraries come from a static, portable prebuilt archive (fframes `build-portable`), so no
   system codec libraries are linked.
-- **Encoding.** Chunks are rendered losslessly (FFV1 in Matroska) and the delivery H.264 is encoded once at the mux by
+- **Encoding.** Chunks are rendered losslessly (FFVHuff in Matroska) and the delivery H.264 is encoded once at the mux by
   the `ffmpeg` on PATH: `--encoder auto` (default) uses NVENC when an NVIDIA GPU answers, VideoToolbox on macOS and
   libx264 otherwise; `--encoder nvenc|videotoolbox|x264` forces one and fails clearly when it cannot open.
 - **Plates.** fframes takes no per-frame raster input from a video file in this harness, so `plate` caches every frame
