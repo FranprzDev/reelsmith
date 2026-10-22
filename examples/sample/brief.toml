@@ -1,0 +1,32 @@
+# The sample ad: what write_brief produces for the beats in examples/sample/README.md.
+extends = "promo.toml"
+
+[video]
+name = "sample_ad"
+
+[[beat]]
+text = "WHAT IF | YOUR SERVER | HAD A TRAILER?"
+dur = 2.6
+clips = [{ clip = "nebula", in = 0.5 }]
+overlay = { asset = "badge", delay = 0.2, crop = "auto", y = 260.0, w = 760.0 }
+
+[[beat]]
+text = "NEW WORLDS | EVERY WEEK"
+flash = true
+clips = [{ clip = "aurora", in = 1.0, zoom = [1.05, 1.18] }]
+
+[[beat]]
+text = "BUILD | WITH FRIENDS"
+clips = [{ clip = "cells", in = 0.5, dur = 1.0 }, { clip = "grid", in = 2.0 }]
+
+[[beat]]
+text = "JOIN | TONIGHT"
+flash = true
+cue = "braam"
+clips = [{ clip = "nebula", in = 3.0 }]
+
+[end_card]
+clip = { clip = "aurora", in = 3.0 }
+asset = "cta"
+dur = 3.5
+text = "SEE YOU THERE"
