@@ -1,0 +1,18 @@
+# build output
+/target/
+build/
+out/
+
+# media never goes into this public repo: clips, motion graphics, renders, audio, captions
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.m4a
+*.srt
+media/
+clips/
+motion/
+!examples/**/brief.toml
