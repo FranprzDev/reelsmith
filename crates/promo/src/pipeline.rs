@@ -125,6 +125,7 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     ev.stage(Stage::Check, Status::Start);
     let mut p = load(cfg, &o.overrides)?;
     p.ensure_inputs()?;
+    crate::preview_gate::check(&p, r)?;
     let backend = o.encoder.resolve()?;
     ev.log(&backend.summary());
     ev.stage(Stage::Check, Status::Done);
@@ -167,5 +168,10 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     let exit = if ok { Exit::Ok } else { Exit::QaFailed };
     let res = BuildOutcome { ok, exit, code: exit as u8, config: cfg.to_path_buf(), output: out.clone(), srt, backend, plan: summary(&p, r), qa: qa_v };
     std::fs::write(out.with_extension("result.json"), serde_json::to_string_pretty(&res)?)?;
+    if r == Res::Preview && res.ok {
+        if let Err(e) = crate::preview_gate::record(&p, &res) {
+            ev.log(&format!("warning: the preview proof could not be written: {e:#}"));
+        }
+    }
     Ok(res)
 }

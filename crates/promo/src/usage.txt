@@ -31,3 +31,4 @@ machine use
   --json                     NDJSON on stdout: stage / progress / result events (logs stay on stderr)
   exit codes                 0 ok, 1 failed (retryable), 2 bad config or usage, 3 QA failed, 4 missing input
   build also writes <output>.result.json
+  --draft / --final        need a completed --preview of the same config and input files (proof: <config>.preview.json)

@@ -22,7 +22,9 @@ use std::time::Duration;
 const INSTRUCTIONS: &str = "Reelsmith renders short-form promo videos (Reels/TikTok/Shorts ads) from local clips. \
 Flow: list_clips on the clips folder -> create_project (style: aspect, music, captions) -> write_brief (one beat per \
 idea: text + clip names + optional overlay, plus an end card) -> render with resolution \"preview\" (360p) to check the \
-cut, \"draft\" (720p) for review, \"final\" (1080p) only after the user approves the draft. render returns the MP4 path \
+cut, \"draft\" (720p) for review, \"final\" (1080p) only after the user approves the draft. A draft or final render requires a completed preview of the same \
+config and input files: after editing the brief or replacing a clip, render a fresh preview first, otherwise render \
+fails. render returns the MP4 path \
 and the QA report (duration, size, loudness -14 LUFS, true peak, black frames); if it is still running it returns a \
 job_id: call get_status. Burned-in captions are off by default (an SRT is written). Never invent claims for on-screen \
 text: use the user's own wording. To open or close an ad with a logo, animate_svg turns an SVG into an alpha .mov: \
@@ -200,7 +202,7 @@ impl Reelsmith {
         Ok(Json(blocking(move || brief::write_brief(&a)).await?))
     }
 
-    #[tool(description = "Render a config: plates, procedural/external music mastered to -14 LUFS, chunked fframes render, mux, SRT and QA. resolution: preview (360p), draft (720p) or final (1080p, only after the draft is approved). Returns the output MP4 and the QA report when done, or a running job_id to poll with get_status.")]
+    #[tool(description = "Render a config: plates, procedural/external music mastered to -14 LUFS, chunked fframes render, mux, SRT and QA. resolution: preview (360p), draft (720p) or final (1080p, only after the draft is approved). draft and final require a completed preview of the same config and inputs first. Returns the output MP4 and the QA report when done, or a running job_id to poll with get_status.")]
     async fn render(&self, Parameters(a): Parameters<RenderArgs>) -> Result<Json<JobStatus>, String> {
         clips::ensure_ffmpeg().map_err(|e| format!("{e:#}"))?;
         let config = if a.config.is_absolute() { a.config.clone() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(&a.config) };
