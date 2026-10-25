@@ -5,6 +5,7 @@ use crate::clips::{self, ClipInfo, ClipList};
 use crate::diagram::{self, DrawDiagramArgs, DrawnDiagram};
 use crate::jobs::{JobStatus, Jobs};
 use crate::sample;
+use crate::stylize::{self, StylizeClipArgs, StylizedClip};
 use promo::encode::{Backend, EncoderChoice};
 use promo::pipeline::{self, BuildOptions};
 use promo::qa::QaSummary;
@@ -182,6 +183,11 @@ impl Reelsmith {
     #[tool(description = "Draw a Mermaid diagram as a self-drawing motion graphic: renders the source to SVG with the embedded Pele engine (every Mermaid 12.1 type: flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, pie, mindmap, timeline, sankey-beta and more) and animates it like animate_svg (default draw_on: strokes draw themselves, then fills fade in; theme light or dark). Returns the alpha .mov, the resolved SVG written next to it, a PNG preview and the detected diagram type. Save the .mov in the project's motion folder and use asset_name as a beat overlay or end_card.asset.")]
     async fn draw_diagram(&self, Parameters(a): Parameters<DrawDiagramArgs>) -> Result<Json<DrawnDiagram>, String> {
         Ok(Json(blocking(move || diagram::draw(&a)).await?))
+    }
+
+    #[tool(description = "Stylize a video into an ASCII-art or ordered-dither clip: decodes it, rebuilds every frame in Rust (glyphs by brightness for ascii, Bayer 8x8 thresholding for dither; source colors or monochrome) and re-encodes an .mp4 with the original audio. Returns the clip, a PNG preview and the frame stats. Save it in the project's clips folder and use its asset_name as a beat clip.")]
+    async fn stylize_clip(&self, Parameters(a): Parameters<StylizeClipArgs>) -> Result<Json<StylizedClip>, String> {
+        Ok(Json(blocking(move || stylize::stylize(&a)).await?))
     }
 
     #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed, captions switch (off by default).")]
