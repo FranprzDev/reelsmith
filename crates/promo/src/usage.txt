@@ -31,4 +31,12 @@ machine use
   --json                     NDJSON on stdout: stage / progress / result events (logs stay on stderr)
   exit codes                 0 ok, 1 failed (retryable), 2 bad config or usage, 3 QA failed, 4 missing input
   build also writes <output>.result.json and appends one JSON line per completed build to renders.jsonl next to the config
+
+telemetry (off until configured and accepted)
+  telemetry [accept]           show exactly what telemetry sends and where, or accept it on this machine
+  REELSMITH_TELEMETRY_ENDPOINT + REELSMITH_TELEMETRY_TOKEN   once accepted, send a small summary of each completed
+                             render to your own API: time, resolution, status, duration, install id and a
+                             pseudonymous project key. No project names, file paths, texts or videos are sent.
+                             Events queue locally while offline and resend later without double counting.
+                             REELSMITH_TELEMETRY=off disables it. The endpoint must be https; http works only against a loopback address (a local `wrangler dev`).
   --draft / --final        need a completed --preview of the same config and input files (proof: <config>.preview.json)

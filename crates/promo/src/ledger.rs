@@ -24,7 +24,7 @@ pub struct LedgerEntry {
     pub fingerprint: String,
 }
 
-pub fn record(p: &Plan, r: Res, o: &BuildOutcome) -> Result<()> {
+pub fn record(p: &Plan, r: Res, o: &BuildOutcome) -> Result<LedgerEntry> {
     let entry = LedgerEntry {
         finished_at_unix: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         name: p.name.clone(),
@@ -45,5 +45,5 @@ pub fn record(p: &Plan, r: Res, o: &BuildOutcome) -> Result<()> {
     let mut line = serde_json::to_string(&entry)?;
     line.push('\n');
     f.write_all(line.as_bytes())?;
-    Ok(())
+    Ok(entry)
 }

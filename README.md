@@ -164,6 +164,28 @@ see [`docs/PROMO_VIDEOS.md`](docs/PROMO_VIDEOS.md) for the config reference.
   true peak ≤ −1 dBTP, black frames, minimum caption size, and a contact sheet.
 - Measured render times are in [DEMO.md](DEMO.md#reference-numbers).
 
+## Render telemetry (optional)
+
+Every completed build appends a line to `renders.jsonl` next to the config. If you also run the small API in
+[`server/`](server/), the CLI and the MCP server can mirror a minimal summary of each completed render to it, so
+renders made on another machine (a friend's, a second computer) show up in one count you own.
+
+- **Off until configured and accepted.** Nothing touches the network unless `REELSMITH_TELEMETRY_ENDPOINT` and
+  `REELSMITH_TELEMETRY_TOKEN` are set *and* the machine's operator has run `promo telemetry accept`.
+  `promo telemetry` shows exactly what would be sent, to where, and how to turn it off; accepting is per machine and
+  per endpoint, so whoever renders on a machine decides for that machine. Once accepted it stays on by default;
+  `REELSMITH_TELEMETRY=off` (or unsetting the variables) disables it.
+- **What each event carries:** finish time, resolution (preview/draft/final), ok + exit code, length in seconds, a
+  random install id generated once per machine, and a pseudonymous project key derived per install so re-renders of
+  the same video group together. **Never sent:** project names, file paths, briefs, texts, clips or videos.
+- **Offline:** events queue locally (`~/.config/reelsmith/renders.queue.jsonl`, override with
+  `REELSMITH_TELEMETRY_HOME`) and resend later; the server dedupes by event id so retries never double count.
+  Telemetry never blocks or fails a render.
+- The token lives in the environment, is never committed or logged, and is only sent over https (plain http works
+  only against a loopback address, for a local `wrangler dev`).
+
+See [`server/README.md`](server/README.md) for running the API on Cloudflare's free tier.
+
 ## Layout
 
 | Path | What it is |
