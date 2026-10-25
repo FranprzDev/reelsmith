@@ -69,6 +69,24 @@ impl Res {
     }
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    #[default]
+    Fframes,
+    Hyperframes,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RenderCfg {
+    #[serde(default)]
+    pub engine: Engine,
+}
+
 /// How a clip fills the canvas when its aspect differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -651,6 +669,8 @@ pub struct PromoFile {
     pub audio: AudioCfg,
     #[serde(default)]
     pub qa: QaCfg,
+    #[serde(default)]
+    pub render: RenderCfg,
 }
 
 /// keys whose values are paths: made absolute against the file that declares them, so `extends` works across folders

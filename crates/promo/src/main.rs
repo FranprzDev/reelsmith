@@ -57,6 +57,14 @@ fn parse(args: &[String]) -> Result<Opts, ConfigError> {
             "--draft" => o.res = Res::Draft,
             "--json" => o.json = true,
             "--no-qa" => o.no_qa = true,
+            "--engine" => {
+                let v = it.next().map(|s| s.as_str()).unwrap_or("");
+                o.ov.engine = Some(match v {
+                    "fframes" => promo::Engine::Fframes,
+                    "hyperframes" => promo::Engine::Hyperframes,
+                    _ => return Err(ConfigError(format!("--engine: unknown engine {v} (fframes | hyperframes)"))),
+                });
+            }
             "--captions" => {
                 o.ov.captions = Some(match val(&mut it, a)?.as_str() {
                     "on" | "true" | "1" => true,
