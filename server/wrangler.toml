@@ -1,0 +1,11 @@
+name = "reelsmith-telemetry"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-24"
+
+[build]
+command = "worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "reelsmith-telemetry"
+database_id = "REPLACE_WITH_YOUR_DATABASE_ID"

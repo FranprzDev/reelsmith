@@ -1,0 +1,20 @@
+[package]
+name = "reelsmith-telemetry"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { version = "0.6", features = ["d1"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = true
