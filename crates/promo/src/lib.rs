@@ -21,6 +21,7 @@ pub mod encode;
 pub mod error;
 pub mod font;
 pub mod frame;
+pub mod ledger;
 pub mod pipeline;
 pub mod plan;
 pub mod plate;

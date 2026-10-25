@@ -168,6 +168,9 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     let exit = if ok { Exit::Ok } else { Exit::QaFailed };
     let res = BuildOutcome { ok, exit, code: exit as u8, config: cfg.to_path_buf(), output: out.clone(), srt, backend, plan: summary(&p, r), qa: qa_v };
     std::fs::write(out.with_extension("result.json"), serde_json::to_string_pretty(&res)?)?;
+    if let Err(e) = crate::ledger::record(&p, r, &res) {
+        ev.log(&format!("warning: the render ledger could not be written: {e:#}"));
+    }
     if r == Res::Preview && res.ok {
         if let Err(e) = crate::preview_gate::record(&p, &res) {
             ev.log(&format!("warning: the preview proof could not be written: {e:#}"));
