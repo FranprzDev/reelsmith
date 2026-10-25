@@ -19,6 +19,7 @@ Burned-in captions are off by default.
 | `list_templates()` | the commented beats brief and the timed voice-over script that ship in the binary |
 | `animate_svg(svg_path, animation, duration_s, fps?, width?, easing?, hold_s?, exit?, exit_s?, codec?, output)` | turns an SVG (logo, icon, badge) into an alpha `.mov` motion graphic (QuickTime Animation or ProRes 4444) with a PNG preview; use it as an intro overlay or end card ([`examples/logo-intro/`](examples/logo-intro/)) |
 | `draw_diagram(source, theme?, animation?, duration_s, fps?, width?, easing?, hold_s?, exit?, exit_s?, codec?, output)` | renders Mermaid diagram text (flowchart, sequence, state, gantt, pie, mindmap, ER, class, sankey, timeline and the rest of Mermaid 12.1) to SVG with the embedded [Pele](https://pele.run) engine and animates it like `animate_svg` (default `draw_on`: the diagram draws itself stroke by stroke); light or dark theme; also writes the resolved `.svg` next to the `.mov` |
+| `stylize_clip(input, style, cell_px?, color?, width?, duration_s?, output)` | rebuilds a video as ASCII art (glyphs by brightness) or ordered dithering (Bayer 8x8), in the source colors or monochrome, re-encoded as an `.mp4` with the original audio and a PNG preview; drop it in the clips folder and use it as a beat clip |
 | `make_sample_clips(folder)` | a procedural sample library (4 clips + 2 alpha motion graphics, drawn by FFmpeg) to try the flow without footage |
 | `create_project(project_dir, clips_folder, motion_folder?, aspect, music, bpm?, music_file?, captions_burned_in)` | writes the project style, `promo.toml` |
 | `write_brief(project_dir, name, beats[], end_card?)` | writes `brief.toml` (one beat per idea: text, clip names, optional overlay; `extends` the style) and returns the resolved timeline and any missing files |
@@ -60,6 +61,14 @@ end, which reads as the diagram drawing itself. `theme` picks Pele's default lig
 footage; the resolved SVG (concrete colors, no CSS variables) is written next to the `.mov` so you can inspect or
 reuse it, and the result reports the detected `diagram_type`. Pele's error messages (line, column, snippet) come back
 when the source does not parse.
+
+### Stylized clips
+
+`stylize_clip` converts footage itself: every frame is decoded with FFmpeg, rebuilt in Rust and re-encoded with the
+original audio. `ascii` draws one glyph per cell chosen by the cell's brightness, tinted with the cell's average
+color (`color: false` for white-on-black); `cell_px` is the glyph size. `dither` applies ordered Bayer 8x8
+thresholding per channel (per luminance with `color: false`) over `cell_px`-sized blocks. The PNG preview is the
+first processed frame.
 
 ## Install
 

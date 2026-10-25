@@ -10,6 +10,7 @@ mod diagram;
 mod jobs;
 mod sample;
 mod server;
+mod stylize;
 
 use rmcp::ServiceExt;
 use std::process::ExitCode;
