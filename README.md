@@ -18,6 +18,7 @@ Burned-in captions are off by default.
 | `probe_clip(path)` | the same facts for one file |
 | `list_templates()` | the commented beats brief and the timed voice-over script that ship in the binary |
 | `animate_svg(svg_path, animation, duration_s, fps?, width?, easing?, hold_s?, exit?, exit_s?, codec?, output)` | turns an SVG (logo, icon, badge) into an alpha `.mov` motion graphic (QuickTime Animation or ProRes 4444) with a PNG preview; use it as an intro overlay or end card ([`examples/logo-intro/`](examples/logo-intro/)) |
+| `draw_diagram(source, theme?, animation?, duration_s, fps?, width?, easing?, hold_s?, exit?, exit_s?, codec?, output)` | renders Mermaid diagram text (flowchart, sequence, state, gantt, pie, mindmap, ER, class, sankey, timeline and the rest of Mermaid 12.1) to SVG with the embedded [Pele](https://pele.run) engine and animates it like `animate_svg` (default `draw_on`: the diagram draws itself stroke by stroke); light or dark theme; also writes the resolved `.svg` next to the `.mov` |
 | `make_sample_clips(folder)` | a procedural sample library (4 clips + 2 alpha motion graphics, drawn by FFmpeg) to try the flow without footage |
 | `create_project(project_dir, clips_folder, motion_folder?, aspect, music, bpm?, music_file?, captions_burned_in)` | writes the project style, `promo.toml` |
 | `write_brief(project_dir, name, beats[], end_card?)` | writes `brief.toml` (one beat per idea: text, clip names, optional overlay; `extends` the style) and returns the resolved timeline and any missing files |
@@ -48,6 +49,17 @@ raster images and pattern contents are not drawn on but shown from the first fra
 replaced. `qtrle` is lossless run-length coding, so a long `glow` hold (every pixel changes as it pulses) makes a large
 file (about 150 MB for 3.3 s at 1080 px; ProRes 4444 is larger still): keep glow holds short or use a smaller
 `width`.
+
+### Diagram overlays
+
+`draw_diagram` turns Mermaid source into the same kind of alpha `.mov`: the diagram is rendered to SVG by
+[Pele](https://github.com/obsidianmd/pele) (MIT, vendored in `crates/reelsmith/vendor/`, run inside the binary on an
+embedded QuickJS runtime, so there is nothing extra to install) and then animated with the same presets as
+`animate_svg`. The default `draw_on` draws every stroke of the diagram progressively and fades the fills in at the
+end, which reads as the diagram drawing itself. `theme` picks Pele's default light palette or a dark one for dark
+footage; the resolved SVG (concrete colors, no CSS variables) is written next to the `.mov` so you can inspect or
+reuse it, and the result reports the detected `diagram_type`. Pele's error messages (line, column, snippet) come back
+when the source does not parse.
 
 ## Install
 

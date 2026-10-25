@@ -174,10 +174,10 @@ pub struct AnimateSvgArgs {
     pub output: PathBuf,
 }
 
-fn d_fps() -> Fps {
+pub(crate) fn d_fps() -> Fps {
     Fps::F60
 }
-fn d_width() -> Width {
+pub(crate) fn d_width() -> Width {
     Width::W1080
 }
 
