@@ -48,3 +48,17 @@ jobs:
             target/release/reelsmith
             target/release/promo
           retention-days: 7
+
+  skills:
+    name: teardown skill tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Test vendored teardown skill
+        run: |
+          for test in .agents/skills/teardown/scripts/test-*.cjs; do
+            node "$test" || exit
+          done
