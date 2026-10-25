@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = { version = "0.8", features = ["preserve_order"] }
 anyhow = "1"
+sha2 = "0.10"
 png = "0.17"
 ttf-parser = "0.25"
 schemars = { version = "1", optional = true }

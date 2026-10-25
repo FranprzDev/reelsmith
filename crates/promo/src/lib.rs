@@ -25,6 +25,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod plate;
 pub mod pool;
+pub mod preview_gate;
 pub mod progress;
 pub mod qa;
 pub mod render;
