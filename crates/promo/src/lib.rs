@@ -31,6 +31,7 @@ pub mod progress;
 pub mod qa;
 pub mod render;
 pub mod script;
+pub mod telemetry;
 
 pub use config::{Aspect, Res};
 pub use plan::{Overrides, Plan};

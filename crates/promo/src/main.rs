@@ -245,6 +245,17 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
             ev.result(&json!({"ok": s.ok, "qa": s}));
             Ok(if s.ok { Exit::Ok } else { Exit::QaFailed })
         }
+        "telemetry" => match o.pos.first().map(String::as_str) {
+            None => {
+                print!("{}", promo::telemetry::describe());
+                Ok(Exit::Ok)
+            }
+            Some("accept") => {
+                println!("{}", promo::telemetry::accept()?);
+                Ok(Exit::Ok)
+            }
+            Some(x) => Err(ConfigError(format!("telemetry takes `accept`, got {x}")).into()),
+        },
         c => Err(ConfigError(format!("unknown command `{c}` (promo help)")).into()),
     }
 }
