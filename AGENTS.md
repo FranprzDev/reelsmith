@@ -7,3 +7,4 @@ references. The Reelsmith handoff is documented in `docs/TEARDOWN.md`.
 The skill creates SVG/PNG/PDF assets, not a new MCP tool. Use `animate_svg` to turn
 its exported SVG into a motion overlay, then use the normal project/brief/render flow.
 Always render and inspect a 360p preview before requesting 720p or 1080p output.
+- `simready`: optional guide for using an NVIDIA SimReady OpenUSD asset as a rendered video source (see `.agents/skills/simready/SKILL.md`). Low priority; no native USD support.
