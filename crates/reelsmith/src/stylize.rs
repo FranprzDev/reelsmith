@@ -138,13 +138,21 @@ fn ascii_frame(src: &[u8], w: usize, h: usize, cell: usize, masks: &[Vec<u8>], c
             }
             let n = (cell * cell) as u64;
             let (r, g, b) = ((r / n) as u8, (g / n) as u8, (b / n) as u8);
-            let lum = (0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0;
+            let (fr, fg, fb) = if color { (r, g, b) } else { (255, 255, 255) };
+            for y in 0..cell {
+                for x in 0..cell {
+                    let i = ((cy * cell + y) * w + cx * cell + x) * 4;
+                    out[i] = fr / 5;
+                    out[i + 1] = fg / 5;
+                    out[i + 2] = fb / 5;
+                }
+            }
+            let lum = ((0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0).powf(0.7);
             let gi = (lum * (masks.len() - 1) as f64).round() as usize;
             if gi == 0 {
                 continue;
             }
             let mask = &masks[gi];
-            let (fr, fg, fb) = if color { (r, g, b) } else { (255, 255, 255) };
             for y in 0..cell {
                 for x in 0..cell {
                     let a = mask[y * cell + x] as u32;
