@@ -172,6 +172,7 @@ see [`docs/PROMO_VIDEOS.md`](docs/PROMO_VIDEOS.md) for the config reference.
 | `crates/promo` | the promo template (library + `promo` CLI): config → plan → plates → audio → chunked fframes render → encode + mux → SRT → QA |
 | `crates/datavid` | the media layer: SVG frame helpers, easing, procedural audio and EBU R128 mastering, ffmpeg/ffprobe helpers, QA reports |
 | `docs/PROMO_VIDEOS.md` | the config reference and the step-by-step guide |
+| `docs/PROMO_COPY_DESIGN.md` | copy and motion guidance for writing promo briefs (hook, benefits, proof, CTA) |
 | `examples/sample/` | a complete brief for the procedural sample library |
 | `examples/logo-intro/` | an original SVG logo animated into an intro overlay and an end card for the sample ad |
 | `templates/promo/` | a starting `brief.toml` and a timed voice-over script |
