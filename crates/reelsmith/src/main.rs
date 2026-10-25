@@ -6,6 +6,7 @@
 mod animate;
 mod brief;
 mod clips;
+mod diagram;
 mod jobs;
 mod sample;
 mod server;
