@@ -63,6 +63,8 @@ pub struct RenderArgs {
     pub encoder: EncoderChoice,
     /// how long to wait for the render before returning a job id (default 45)
     pub wait_seconds: Option<u64>,
+    /// render engine override: "fframes" (the config default) or "hyperframes" (HTML compositions, needs Node.js 22+)
+    pub engine: Option<promo::Engine>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -192,7 +194,7 @@ impl Reelsmith {
         Ok(Json(blocking(move || stylize::stylize(&a)).await?))
     }
 
-    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed, captions switch (off by default).")]
+    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed, captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering).")]
     async fn create_project(&self, Parameters(a): Parameters<CreateProjectArgs>) -> Result<Json<ProjectCreated>, String> {
         Ok(Json(blocking(move || brief::create_project(&a)).await?))
     }
@@ -208,7 +210,7 @@ impl Reelsmith {
         let config = if a.config.is_absolute() { a.config.clone() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(&a.config) };
         let opts = BuildOptions {
             res: a.resolution,
-            overrides: Overrides { captions: a.captions_burned_in, ..Default::default() },
+            overrides: Overrides { engine: a.engine, captions: a.captions_burned_in, ..Default::default() },
             out: a.out,
             chunk_frames: 60,
             retries: 3,

@@ -4,7 +4,7 @@
 //! * `brief.toml`, one ad: its beats (text + clips + optional overlay) and end card. It `extends = "promo.toml"`, so
 //!   the template resolves both into one timeline exactly as the `promo` CLI does.
 use anyhow::{Context, Result, bail};
-use promo::config::{Aspect, CueKind, MusicKind};
+use promo::config::{Aspect, CueKind, Engine, MusicKind};
 use promo::pipeline::{self, PlanSummary};
 use promo::{Overrides, Plan, Res};
 use schemars::JsonSchema;
@@ -39,6 +39,8 @@ pub struct CreateProjectArgs {
     /// replace an existing promo.toml
     #[serde(default)]
     pub overwrite: bool,
+    /// render engine for this project: "fframes" (default) or "hyperframes" (HTML compositions, needs Node.js 22+)
+    pub engine: Option<Engine>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -179,6 +181,7 @@ pub fn create_project(a: &CreateProjectArgs) -> Result<ProjectCreated> {
         ("video", Some(table(vec![("name", Some(Value::String(name))), ("aspect", Some(enum_str(&a.aspect)?))]))),
         ("paths", Some(table(vec![("clips", Some(path_str(&clips))), ("motion", Some(path_str(&motion))), ("out", Some(Value::String("out".into())))]))),
         ("captions", Some(table(vec![("enabled", Some(Value::Boolean(a.captions_burned_in)))]))),
+        ("render", a.engine.as_ref().map(|e| table(vec![("engine", Some(enum_str(e).unwrap_or(Value::String("fframes".into()))))]))),
         (
             "music",
             Some(table(vec![
