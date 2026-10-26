@@ -144,7 +144,7 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
 
             ev.stage(Stage::Render, Status::Start);
             let fb = crate::frame::FrameBuilder::new(p.clone())?;
-            render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, ev)?;
+            render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, &backend, ev)?;
             ev.stage(Stage::Render, Status::Done);
 
             ev.stage(Stage::Mux, Status::Start);
