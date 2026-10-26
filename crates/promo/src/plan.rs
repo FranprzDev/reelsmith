@@ -53,6 +53,7 @@ impl Overlay {
 /// Overrides from the command line (or an upload app) that win over the config.
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
+    pub engine: Option<Engine>,
     pub clips: Option<PathBuf>,
     pub motion: Option<PathBuf>,
     pub out_dir: Option<PathBuf>,
@@ -62,6 +63,8 @@ pub struct Overrides {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    #[serde(default)]
+    pub engine: Engine,
     pub name: String,
     pub config: PathBuf,
     pub aspect: Aspect,
@@ -299,6 +302,7 @@ impl Plan {
         let mut caption_style = f.captions.clone();
         caption_style.words.clear();
         let plan = Plan {
+            engine: ov.engine.unwrap_or(f.render.engine),
             name: f.video.name.clone(),
             config: config.to_path_buf(),
             aspect: f.video.aspect,

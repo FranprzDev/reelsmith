@@ -130,25 +130,40 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     ev.log(&backend.summary());
     ev.stage(Stage::Check, Status::Done);
 
-    ev.stage(Stage::Plate, Status::Start);
-    plate::run(&mut p, r, Only::All, o.jobs, &backend, ev)?;
-    p.save()?;
-    ev.stage(Stage::Plate, Status::Done);
-
-    ev.stage(Stage::Audio, Status::Start);
-    audio::run(&p, ev)?;
-    ev.stage(Stage::Audio, Status::Done);
-
-    ev.stage(Stage::Render, Status::Start);
-    let fb = crate::frame::FrameBuilder::new(p.clone())?;
-    render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, ev)?;
-    ev.stage(Stage::Render, Status::Done);
-
-    ev.stage(Stage::Mux, Status::Start);
     let out = o.out.clone().unwrap_or_else(|| p.default_out(r));
-    render::mux(&p, r, o.chunk_frames, &backend, &out)?;
-    ev.log(&format!("mux: {}", out.display()));
-    ev.stage(Stage::Mux, Status::Done);
+    match p.engine {
+        crate::config::Engine::Fframes => {
+            ev.stage(Stage::Plate, Status::Start);
+            plate::run(&mut p, r, Only::All, o.jobs, &backend, ev)?;
+            p.save()?;
+            ev.stage(Stage::Plate, Status::Done);
+
+            ev.stage(Stage::Audio, Status::Start);
+            audio::run(&p, ev)?;
+            ev.stage(Stage::Audio, Status::Done);
+
+            ev.stage(Stage::Render, Status::Start);
+            let fb = crate::frame::FrameBuilder::new(p.clone())?;
+            render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, ev)?;
+            ev.stage(Stage::Render, Status::Done);
+
+            ev.stage(Stage::Mux, Status::Start);
+            render::mux(&p, r, o.chunk_frames, &backend, &out)?;
+            ev.log(&format!("mux: {}", out.display()));
+            ev.stage(Stage::Mux, Status::Done);
+        }
+        crate::config::Engine::Hyperframes => {
+            ev.stage(Stage::Plate, Status::Skipped);
+            ev.stage(Stage::Audio, Status::Start);
+            audio::run(&p, ev)?;
+            ev.stage(Stage::Audio, Status::Done);
+
+            ev.stage(Stage::Render, Status::Start);
+            crate::hyperframes::render(&p, r, &out, o.jobs, ev)?;
+            ev.stage(Stage::Render, Status::Done);
+            ev.stage(Stage::Mux, Status::Skipped);
+        }
+    }
 
     ev.stage(Stage::Srt, Status::Start);
     let srt = write_srt(&p)?;

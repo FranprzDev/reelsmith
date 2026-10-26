@@ -21,6 +21,7 @@ pub mod encode;
 pub mod error;
 pub mod font;
 pub mod frame;
+pub mod hyperframes;
 pub mod ledger;
 pub mod pipeline;
 pub mod plan;
@@ -33,5 +34,5 @@ pub mod render;
 pub mod script;
 pub mod telemetry;
 
-pub use config::{Aspect, Res};
+pub use config::{Aspect, Engine, Res};
 pub use plan::{Overrides, Plan};
