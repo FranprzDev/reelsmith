@@ -1,18 +1,3 @@
-//! The GPU / encoder backend. fframes renders each chunk losslessly (FFV1 in Matroska); the mux joins the chunks and
-//! encodes the delivery MP4 once with the `ffmpeg` on PATH, which is where the hardware encoders live. The same backend
-//! also picks the hardware decoder used to cut the source clips into plates.
-//!
-//! Detection test-opens each encoder with a one-frame null encode, in priority order for this OS:
-//!
-//! | OS      | order                                                        |
-//! |---------|--------------------------------------------------------------|
-//! | Windows | `h264_nvenc` (NVIDIA), `h264_amf` (AMD), `h264_qsv` (Intel), `libx264` |
-//! | Linux   | `h264_nvenc` (NVIDIA), `h264_vaapi` (AMD / Intel), `libx264`  |
-//! | macOS   | `h264_videotoolbox` (Apple), `libx264`                        |
-//!
-//! The paired hardware decoder (CUDA, D3D11VA, VA-API, VideoToolbox) is test-opened on a tiny H.264 stream; when it
-//! does not open, the clips are decoded on the CPU and the backend says so. Every probe and the reason for the choice
-//! are reported, never hidden. An explicit encoder that cannot open is an error, not a silent fallback.
 use crate::config::Res;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};

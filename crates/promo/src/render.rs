@@ -1,29 +1,26 @@
-//! The fframes render: a `Video` per canvas shape, a chunked and resumable full render (each chunk its own process with
-//! only its own rasters, several chunks at once, retried when killed) and the final join + encode + audio mux.
-//!
-//! Chunks are lossless FFVHuff in Matroska (built into every FFmpeg, so the render works the same on every OS). It
-//! encodes and decodes about 5x faster than FFV1 for ~45% bigger files, and the mux decodes every chunk on one thread,
-//! so the intermediate codec sits on the critical path. The delivery H.264 is encoded once at the mux with the encoder
-//! [`crate::encode`] picked.
-//!
-//! A chunk is skipped when its part exists and its key (the SVG of every frame in it plus the plate stamps it draws)
-//! is unchanged, so after an edit only the touched chunks render again.
 use anyhow::{Context, Result};
-use fframes::{AudioMap, Color, Duration, FFramesContext, Frame, Svgr, Video};
+use fframes::{AudioMap, Color, CpuFrameRenderer, Duration, FFramesContext, Frame, Previewer, Svgr, Video};
 use crate::config::{Aspect, Res};
 use crate::encode::Backend;
 use crate::frame::FrameBuilder;
 use crate::plan::{Plan, key_of};
 use crate::pool;
 use crate::progress::{Events, Stage};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// container of the lossless chunks
-const PART_EXT: &str = "mkv";
-/// the lossless codec of the chunks (part of the chunk key, so parts made with another codec are re-rendered)
-const PART_CODEC: &str = "ffvhuff";
+const PART_EXT: &str = "mp4";
+const PART_CODEC: &str = "h264-rgba-v1";
+const CHUNK_ENV: &str = "PROMO_CHUNK";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChunkRequest {
+    start: usize,
+    end: usize,
+    resolution: Res,
+}
 
 /// set on the child process that hands a frame range to the fframes CLI
 pub const PASSTHROUGH: &str = "PROMO_PASSTHROUGH";
@@ -62,17 +59,19 @@ impl<const W: usize, const H: usize> Video for PromoVideo<W, H> {
     }
 }
 
-fn run_cli<'m, const W: usize, const H: usize>(fb: FrameBuilder, mp: &'m dyn fframes::MediaProvider<'m>) -> ExitCode {
+fn stream_frames<'m, const W: usize, const H: usize>(fb: FrameBuilder, mp: &'m dyn fframes::MediaProvider<'m>) -> Result<ExitCode> {
     let video = PromoVideo::<W, H> { fb };
-    fframes::cli::new(
-        &video,
-        fframes::RenderOptions {
-            media: Some(mp),
-            video_encoder_options: fframes::EncoderOptions { preferred_encoder: Some(PART_CODEC), ..Default::default() },
-            ..Default::default()
-        },
-    )
-    .run()
+    let request: ChunkRequest = serde_json::from_str(&std::env::var(CHUNK_ENV).context("PROMO_CHUNK is not set")?)?;
+    anyhow::ensure!(request.start < request.end && request.end <= video.fb.plan.frames(), "invalid chunk frame range");
+    let options = fframes::RenderOptions { media: Some(mp), scale_resolution: request.resolution.scale(), ..Default::default() };
+    let mut previewer = Previewer::new(&video, &options)?;
+    let mut renderer = CpuFrameRenderer::default();
+    let mut stdout = std::io::stdout().lock();
+    for frame in request.start..request.end {
+        stdout.write_all(&previewer.render(frame, &mut renderer)?.pixels)?;
+    }
+    stdout.flush()?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The fframes CLI on the plan in `PROMO_PLAN`, with the media folder in `PROMO_MEDIA`.
@@ -82,11 +81,11 @@ pub fn passthrough() -> Result<ExitCode> {
     let media = fframes::MediaDirectory::read_folder(&mdir).with_context(|| format!("media folder {}", mdir.display()))?;
     let mp = media.process_media_source().map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let fb = FrameBuilder::new(plan)?;
-    Ok(match fb.plan.aspect {
-        Aspect::Vertical => run_cli::<1080, 1920>(fb, &mp),
-        Aspect::Horizontal => run_cli::<1920, 1080>(fb, &mp),
-        Aspect::Square => run_cli::<1080, 1080>(fb, &mp),
-    })
+    match fb.plan.aspect {
+        Aspect::Vertical => stream_frames::<1080, 1920>(fb, &mp),
+        Aspect::Horizontal => stream_frames::<1920, 1080>(fb, &mp),
+        Aspect::Square => stream_frames::<1080, 1080>(fb, &mp),
+    }
 }
 
 pub fn chunks_dir(p: &Plan, r: Res) -> PathBuf {
@@ -105,10 +104,11 @@ fn stamp(dir: &Path, name: &str) -> String {
 }
 
 /// what a chunk's pixels depend on
-fn chunk_key(fb: &FrameBuilder, r: Res, a: usize, b: usize) -> String {
+fn chunk_key(fb: &FrameBuilder, r: Res, a: usize, b: usize, backend: &Backend) -> String {
     let p = &fb.plan;
     let fd = p.frames_dir(r);
-    let mut s = format!("{PART_CODEC} {} {}x{} ", r.tag(), p.out_size(r).0, p.out_size(r).1);
+    let (w, h) = p.out_size(r);
+    let mut s = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
     for (i, sh) in p.shots.iter().enumerate() {
         if p.fi(sh.t0) < b && p.fi(sh.t1) > a {
             s.push_str(&stamp(&fd, &format!(".shot_{i:03}")));
@@ -129,13 +129,13 @@ fn chunk_key(fb: &FrameBuilder, r: Res, a: usize, b: usize) -> String {
 }
 
 /// Render chunk `k` (frames `a..b`) unless it is current; a killed render is retried `retries` times.
-pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize), retries: usize) -> Result<(PathBuf, bool)> {
+pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize), retries: usize, backend: &Backend) -> Result<(PathBuf, bool)> {
     let p = &fb.plan;
     let work = chunks_dir(p, r);
     std::fs::create_dir_all(&work)?;
     let part = work.join(format!("part_{k:03}.{PART_EXT}"));
     let key_file = work.join(format!("part_{k:03}.key"));
-    let key = chunk_key(fb, r, a, b);
+    let key = chunk_key(fb, r, a, b, backend);
     if part.exists() && std::fs::read_to_string(&key_file).is_ok_and(|s| s == key) {
         return Ok((part, false));
     }
@@ -161,16 +161,52 @@ pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize),
     let mut last = String::new();
     for attempt in 1..=retries.max(1) {
         let _ = std::fs::remove_file(&tmp);
-        let st = Command::new(std::env::current_exe()?)
-            .args(["render", &format!("{a}f..{b}f"), "--scale", &r.scale().to_string(), "-o"])
-            .arg(&tmp)
+        let mut producer = Command::new(std::env::current_exe()?)
             .env(PASSTHROUGH, "1")
             .env(PLAN_ENV, p.plan_json())
             .env(MEDIA_ENV, &media)
-            .stdout(Stdio::null())
+            .env(CHUNK_ENV, serde_json::to_string(&ChunkRequest { start: a, end: b, resolution: r })?)
+            .stdout(Stdio::piped())
             .stderr(std::fs::File::create(&log)?)
-            .status()?;
-        if st.success() && tmp.exists() {
+            .spawn()?;
+        let (w, h) = p.out_size(r);
+        let mut args = vec!["-hide_banner".to_string(), "-v".into(), "error".into(), "-y".into()];
+        args.extend(backend.encoder.input_args(backend.device.as_deref()));
+        args.extend(["-f".into(), "rawvideo".into(), "-pixel_format".into(), "rgba".into(), "-video_size".into(), format!("{w}x{h}"), "-framerate".into(), p.fps.to_string(), "-i".into(), "pipe:0".into(), "-an".into(), "-frames:v".into(), (b - a).to_string()]);
+        let tail = backend.encoder.filter_tail();
+        if !tail.is_empty() {
+            args.extend(["-vf".into(), tail.trim_start_matches(',').into()]);
+        }
+        args.extend(backend.encoder.args(r, w, h, p.fps));
+        args.push(tmp.display().to_string());
+        let encoder = Command::new("ffmpeg")
+            .args(args)
+            .stdin(producer.stdout.take().context("the chunk renderer has no pixel stream")?)
+            .stdout(Stdio::null())
+            .stderr(std::fs::OpenOptions::new().append(true).open(&log)?)
+            .spawn();
+        let st = match encoder {
+            Ok(mut encoder) => match encoder.wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    let _ = encoder.kill();
+                    let _ = encoder.wait();
+                    let _ = producer.kill();
+                    let _ = producer.wait();
+                    return Err(error.into());
+                }
+            },
+            Err(error) => {
+                let _ = producer.kill();
+                let _ = producer.wait();
+                return Err(error.into());
+            }
+        };
+        if !st.success() {
+            let _ = producer.kill();
+        }
+        let rendered = producer.wait()?;
+        if st.success() && rendered.success() && tmp.exists() {
             std::fs::rename(&tmp, &part)?;
             std::fs::write(&key_file, &key)?;
             let _ = std::fs::remove_dir_all(&media);
@@ -183,13 +219,13 @@ pub fn render_chunk(fb: &FrameBuilder, r: Res, k: usize, (a, b): (usize, usize),
 }
 
 /// Every chunk (or only `only`), `jobs` fframes processes at a time. Returns the parts in order.
-pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize, only: Option<usize>, jobs: usize, ev: &Events) -> Result<Vec<PathBuf>> {
+pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize, only: Option<usize>, jobs: usize, backend: &Backend, ev: &Events) -> Result<Vec<PathBuf>> {
     let rs = ranges(&fb.plan, chunk_frames);
     let todo: Vec<usize> = (0..rs.len()).filter(|k| only.is_none_or(|o| o == *k)).collect();
     let done = AtomicUsize::new(0);
     let parts = pool::map(jobs, &todo, |&k| {
         let range = rs[k];
-        let (part, rendered) = render_chunk(fb, r, k, range, retries)?;
+        let (part, rendered) = render_chunk(fb, r, k, range, retries, backend)?;
         let n = done.fetch_add(1, Ordering::Relaxed) + 1;
         ev.log(&format!("render: chunk {}/{} frames {}..{} {}", k + 1, rs.len(), range.0, range.1, if rendered { "rendered" } else { "current" }));
         ev.progress(Stage::Render, n, todo.len());
@@ -208,29 +244,21 @@ pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize
     Ok(parts)
 }
 
-/// Join the chunks, encode the delivery H.264 with the backend's encoder and mux the mastered audio. The MP4 is written to the system
-/// temp folder and then copied (`+faststart` rewrites the file in place, which fails on some network/FUSE filesystems).
-pub fn mux(p: &Plan, r: Res, chunk_frames: usize, backend: &Backend, out: &Path) -> Result<()> {
-    let enc = backend.encoder;
+pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<()> {
     let work = chunks_dir(p, r);
-    let n = ranges(p, chunk_frames).len();
+    let ranges = ranges(p, chunk_frames);
     let mut list = String::new();
-    for k in 0..n {
+    for (k, &(a, b)) in ranges.iter().enumerate() {
         let part = work.join(format!("part_{k:03}.{PART_EXT}"));
         anyhow::ensure!(part.exists(), "chunk {k} is not rendered yet (promo render)");
-        list.push_str(&format!("file '{}'\n", part.display()));
+        let path = part.display().to_string().replace('\\', "\\\\").replace('\'', "'\\''");
+        list.push_str(&format!("file '{path}'\nduration {:.12}\n", (b - a) as f64 / p.fps as f64));
     }
     std::fs::write(work.join("parts.txt"), list)?;
     anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
     let tmp = std::env::temp_dir().join(format!("promo_{}_{}.mp4", p.name, std::process::id()));
-    let (w, h) = p.out_size(r);
-    let mut args = enc.input_args(backend.device.as_deref());
+    let mut args: Vec<String> = ["-f", "concat", "-safe", "0", "-i"].map(String::from).to_vec();
     args.extend([
-        "-f".into(),
-        "concat".into(),
-        "-safe".into(),
-        "0".into(),
-        "-i".into(),
         work.join("parts.txt").display().to_string(),
         "-i".into(),
         p.audio_wav().display().to_string(),
@@ -238,15 +266,8 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, backend: &Backend, out: &Path)
         "0:v".into(),
         "-map".into(),
         "1:a".into(),
-        // Matroska chunk durations stop at the last frame's pts, so the concat demuxer overlaps (and drops) a frame per
-        // join; renumbering the frames keeps every rendered frame at a constant rate
-        "-vf".into(),
-        format!("setpts=N/({}*TB){}", p.fps, enc.filter_tail()),
-        "-r".into(),
-        p.fps.to_string(),
-    ]);
-    args.extend(enc.args(r, w, h, p.fps));
-    args.extend([
+        "-c:v".into(),
+        "copy".into(),
         "-c:a".into(),
         "aac".into(),
         "-b:a".into(),
@@ -257,7 +278,7 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, backend: &Backend, out: &Path)
         "+faststart".into(),
         tmp.display().to_string(),
     ]);
-    datavid::media::ffmpeg(&args, &format!("the concat / {} encode / audio mux", enc.ffmpeg_name()))?;
+    datavid::media::ffmpeg(&args, "the video stream-copy / audio mux")?;
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d)?;
     }
