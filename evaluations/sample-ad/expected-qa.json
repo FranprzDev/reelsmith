@@ -15,11 +15,22 @@
   ],
   "duration_s": 9.734,
   "duration_tol_s": 0.1,
-  "size": [360, 640],
+  "size": [
+    360,
+    640
+  ],
   "integrated_lufs": -14.05,
   "lufs_tol": 0.5,
   "true_peak_dbtp_max": -1.0,
   "black_frames": 0,
-  "shot_source_median_ydif": [6.91286, 0.693851, 18.0586, 2.22859, 4.66492, 0.570601, 1.30289],
+  "shot_source_median_ydif": [
+    8.08472,
+    1.41257,
+    14.1119,
+    2.42785,
+    3.80187,
+    1.11958,
+    2.49243
+  ],
   "shot_ydif_rel_tol": 0.5
 }
