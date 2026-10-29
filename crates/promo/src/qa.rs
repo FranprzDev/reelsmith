@@ -62,8 +62,8 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
     let blacks = media::black_frames(video, p.qa.black_min_dur, p.qa.black_pix_th)?;
     rep.check("black frames", blacks.is_empty(), &if blacks.is_empty() { "none".into() } else { format!("{blacks:?}") });
     // ---- motion: a shot whose source picture never changes is a photo, not a promo shot. Measured on the
-    // shot's source window (median YDIF), so the renderer's default push-in can't mask it and cut-flash
-    // frames can't hide it: a frozen frame reads ~0.001, the calmest real clip in the sample ~0.9.
+    // shot's source window (median YDIF over 15 fps samples at 160 px), so the renderer's default push-in
+    // can't mask it and cut-flash frames can't hide it: a frozen frame reads ~0.0005, real clips ~1+.
     let mut shot_motion: Vec<Option<f64>> = Vec::new();
     let mut stills: Vec<String> = Vec::new();
     for (i, s) in p.shots.iter().enumerate() {
