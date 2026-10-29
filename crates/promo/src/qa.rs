@@ -23,6 +23,8 @@ pub struct QaSummary {
     pub true_peak_dbtp: f64,
     pub lra: f64,
     pub black_frames: Vec<(f64, f64)>,
+    /// median per-frame YDIF of each shot's source window (`None` when the window is too short to measure)
+    pub shot_motion: Vec<Option<f64>>,
     pub min_caption_px: Option<f64>,
     pub failures: Vec<String>,
     pub report: String,
@@ -59,6 +61,30 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
     // ---- picture
     let blacks = media::black_frames(video, p.qa.black_min_dur, p.qa.black_pix_th)?;
     rep.check("black frames", blacks.is_empty(), &if blacks.is_empty() { "none".into() } else { format!("{blacks:?}") });
+    // ---- motion: a shot whose source picture never changes is a photo, not a promo shot. Measured on the
+    // shot's source window (median YDIF), so the renderer's default push-in can't mask it and cut-flash
+    // frames can't hide it: a frozen frame reads ~0.001, the calmest real clip in the sample ~0.9.
+    let mut shot_motion: Vec<Option<f64>> = Vec::new();
+    let mut stills: Vec<String> = Vec::new();
+    for (i, s) in p.shots.iter().enumerate() {
+        let mut vs: Vec<f64> = media::frame_motion(&s.clip, s.src_in, Some(s.t1 - s.t0))?.into_iter().map(|(_, v)| v).collect();
+        if vs.len() < 2 {
+            shot_motion.push(None);
+            continue;
+        }
+        vs.sort_by(f64::total_cmp);
+        let median = vs[vs.len() / 2];
+        shot_motion.push(Some(median));
+        if p.qa.min_motion > 0.0 && median < p.qa.min_motion {
+            stills.push(format!("shot {i} ({:.1}-{:.1} s): median YDIF {median:.3}", s.t0, s.t1));
+        }
+    }
+    rep.check(
+        "still shots",
+        stills.is_empty(),
+        &if stills.is_empty() { format!("every shot's source moves (median YDIF >= {})", p.qa.min_motion) } else { stills.join("; ") },
+    );
+    rep.put("motion", json!({"min_motion": p.qa.min_motion, "shot_source_median_ydif": shot_motion}));
     let fb = FrameBuilder::new(p.clone())?;
     let min_cap = fb.min_caption_size();
     match min_cap {
@@ -82,6 +108,7 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
         true_peak_dbtp: l.true_peak_dbtp,
         lra: l.lra,
         black_frames: blacks,
+        shot_motion,
         min_caption_px: min_cap,
         failures: rep.failures.clone(),
         report: dir.join("QA.md").display().to_string(),

@@ -92,3 +92,55 @@ pub fn frame_at(file: &Path, t: f64, out: &Path, width: u32) -> Result<()> {
         ["-ss".into(), format!("{t:.3}"), "-i".into(), file.display().to_string(), "-frames:v".into(), "1".into(), "-update".into(), "1".into(), "-vf".into(), format!("scale={width}:-2"), out.display().to_string()].to_vec();
     ffmpeg(&args, &format!("the frame at {t:.2} s"))
 }
+
+/// Per-frame luma motion `(pts_time, ydif)` from ffmpeg `signalstats`, over the window starting at
+/// `start` seconds (`dur` caps its length). YDIF is the mean absolute luma difference between a frame
+/// and the one before it (about 0 for a frozen frame, tens for fast cuts). QA uses it to tell a shot's
+/// source apart from a still photo.
+pub fn frame_motion(file: &Path, start: f64, dur: Option<f64>) -> Result<Vec<(f64, f64)>> {
+    let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostats".into()];
+    if start > 0.0 {
+        args.extend(["-ss".into(), format!("{start:.3}")]);
+    }
+    args.extend(["-i".into(), file.display().to_string()]);
+    if let Some(d) = dur {
+        args.extend(["-t".into(), format!("{d:.3}")]);
+    }
+    args.extend(["-vf".into(), "signalstats,metadata=print:file=-".into(), "-an".into(), "-f".into(), "null".into(), "-".into()]);
+    let out = Command::new("ffmpeg").args(&args).output().context("running ffmpeg signalstats")?;
+    anyhow::ensure!(out.status.success(), "ffmpeg signalstats failed for {}: {}", file.display(), String::from_utf8_lossy(&out.stderr));
+    Ok(parse_ydif(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Parse `metadata=print` output: a `... pts_time:1.234` line followed by `lavfi.signalstats.YDIF=5.678`.
+/// Kept separate from the ffmpeg call so the parsing is unit-testable.
+fn parse_ydif(log: &str) -> Vec<(f64, f64)> {
+    let mut t = None;
+    let mut out = Vec::new();
+    for l in log.lines() {
+        if let Some(v) = l.split("pts_time:").nth(1) {
+            t = v.split_whitespace().next().and_then(|v| v.parse::<f64>().ok());
+        } else if let Some(v) = l.split("lavfi.signalstats.YDIF=").nth(1) {
+            if let (Some(t), Some(v)) = (t, v.trim().parse::<f64>().ok()) {
+                out.push((t, v));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ydif_parsing_pairs_timestamps_with_values() {
+        let log = "frame:0   pts:0       pts_time:0\nlavfi.signalstats.YAVG=12.3\nlavfi.signalstats.YDIF=0\nframe:1   pts:1024    pts_time:0.033333\nlavfi.signalstats.YDIF=6.20553\n";
+        assert_eq!(parse_ydif(log), vec![(0.0, 0.0), (0.033333, 6.20553)]);
+    }
+
+    #[test]
+    fn ydif_parsing_skips_lines_without_ydif() {
+        assert_eq!(parse_ydif("frame:0 pts:0 pts_time:0\nlavfi.signalstats.YAVG=1.0\n"), vec![]);
+    }
+}
