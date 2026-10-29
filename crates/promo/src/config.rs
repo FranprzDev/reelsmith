@@ -622,6 +622,10 @@ pub struct QaCfg {
     pub black_min_dur: f64,
     #[serde(default = "d_black_th")]
     pub black_pix_th: f64,
+    /// median per-frame luma difference (ffmpeg YDIF) of a shot's source window below which the source
+    /// counts as a still photo (a frozen frame reads ~0.001, the calmest real clip ~0.9); 0 disables
+    #[serde(default = "d_min_motion")]
+    pub min_motion: f64,
 }
 fn d_min_text() -> f64 {
     48.0
@@ -631,6 +635,9 @@ fn d_black_d() -> f64 {
 }
 fn d_black_th() -> f64 {
     0.08
+}
+fn d_min_motion() -> f64 {
+    0.1
 }
 impl Default for QaCfg {
     fn default() -> Self {

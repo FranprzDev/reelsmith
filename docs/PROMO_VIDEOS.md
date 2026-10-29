@@ -25,7 +25,7 @@ with the word-by-word pop.
 | Cues | beat `cue` or `[[cue]]` | `braam`, `hit`, `whoosh` at a time with a gain |
 | Voice-over | `[voiceover]` | `file`, `gain_db`, `offset`, `duck_db` (music ducks under the voice), `script` (timed captions aligned to the voice) |
 | Loudness | `[audio]` | `lufs = -14`, `lufs_tolerance`, `ceiling_db` (limiter), `true_peak_max` (QA) |
-| QA | `[qa]` | duration, size, fps, audio stream, integrated loudness, true peak, black frames, min caption size (only when burned in), contact sheet, caption frames |
+| QA | `[qa]` | duration, size, fps, audio stream, integrated loudness, true peak, black frames, still shots (per-shot source motion, median YDIF; `min_motion`, 0 disables), min caption size (only when burned in), contact sheet, caption frames |
 | Styles | `extends = "style.toml"` | inherit everything from another config (tables merge, arrays are replaced); paths resolve against the file that declares them |
 
 ## Make a new video from texts + clips
