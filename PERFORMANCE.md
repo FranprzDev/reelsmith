@@ -58,12 +58,18 @@ they gain more from extra cores than the preview does.
 
 Sample ad (`examples/sample`, 292 frames, 720p draft): 28.9 s → 24.9 s (−14%) with #9, #11 and #14, on 2 cores.
 
-Lossless intermediate, 675 frames at 360p, one thread:
+Since PR #27 the chunks are no longer lossless intermediates: each chunk streams its frames into the selected H.264
+encoder once and the final mux stream-copies the video (audio encoded once). On a 12.1 s, 363-frame test with one
+chunk job and libx264: mux 10.4 s → 0.3 s, a fully cached rebuild 12.8 s → 2.65 s, cold chunks 38.4 s → 37.2 s
+(within noise). The output is no longer pixel-identical to the old lossless route (SSIM 0.9931 against it); the joined
+video is identical to its encoded chunks. The FFV1 / FFVHuff numbers below are kept for the record.
+
+Lossless intermediate (before #27), 675 frames at 360p, one thread:
 
 | codec | encode | decode | size |
 |---|---|---|---|
 | FFV1 | 2.66 s | 2.96 s | 60.1 MB |
-| FFVHuff (now) | 0.57 s | 0.62 s | 87.5 MB |
+| FFVHuff (#14, until #27) | 0.57 s | 0.62 s | 87.5 MB |
 
 ### Tried and rejected
 

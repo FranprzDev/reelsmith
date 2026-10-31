@@ -124,9 +124,10 @@ logs:
 
 ## Sandbox lessons
 
-- **2 CPUs, no GPU.** fframes renders on the CPU backend; one render process already keeps both cores busy, so chunks
-  run one after the other (parallel chunks only double the memory). A 720p frame of this template costs ~40 ms; the
-  22.5 s reference draft renders in ~30 s, plating takes longer than rendering.
+- **2 CPUs, no GPU.** fframes renders on the CPU backend. Plates and chunks run on a worker pool (`--jobs`, default
+  every core; lower it on machines with little RAM, since each job is its own process). A 720p frame of this template
+  costs ~40 ms; the 22.5 s reference draft renders in ~30 s, plating takes longer than rendering. Measured timings:
+  [`PERFORMANCE.md`](../PERFORMANCE.md); more pitfalls and fixes: [`LESSONS.md`](LESSONS.md).
 - **Rebuilds take ~4 minutes** (fframes + ffmpeg-sys). Most edits are config-only and need no rebuild. `cargo build`
   runs past a 120 s tool limit: start it detached (`setsid nohup cargo build --release -p promo > build.log 2>&1 &`)
   and poll the log.
@@ -156,4 +157,5 @@ logs:
 - More caption styles (karaoke highlight, two-line groups, per-word colour) and safe-area guides per platform.
 - Music: loop / trim an external track to the cut and snap cuts to its beats.
 - Platform presets (Reels / TikTok / Shorts loudness and length limits) checked in QA.
-- CI on GitHub Actions running `cargo build` and the 360p smoke render on synthetic clips.
+- A 360p smoke render on the procedural sample clips in CI (CI already builds both binaries and checks the MCP
+  `tools/list`).
