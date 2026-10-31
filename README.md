@@ -203,6 +203,9 @@ See [`server/README.md`](server/README.md) for running the API on Cloudflare's f
 | `crates/datavid` | the media layer: SVG frame helpers, easing, procedural audio and EBU R128 mastering, ffmpeg/ffprobe helpers, QA reports |
 | `docs/PROMO_VIDEOS.md` | the config reference and the step-by-step guide |
 | `docs/PROMO_COPY_DESIGN.md` | copy and motion guidance for writing promo briefs (hook, benefits, proof, CTA) |
+| `docs/LESSONS.md` | what earlier video projects taught: workflow, the owner's feedback on drafts, pitfalls and fixes, checklists |
+| `AGENTS.md` | how an agent or new maintainer builds, runs and checks the harness from scratch |
+| `scripts/` | `mcp_call.py` drives the MCP server without a host; `compare_renders.py` compares two renders (SSIM, PSNR, loudness) |
 | `examples/sample/` | a complete brief for the procedural sample library |
 | `examples/logo-intro/` | an original SVG logo animated into an intro overlay and an end card for the sample ad |
 | `templates/promo/` | a starting `brief.toml` and a timed voice-over script |
