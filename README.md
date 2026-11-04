@@ -85,8 +85,7 @@ new MCP tool or a global install. See [setup and video handoff](docs/TEARDOWN.md
    - macOS: `brew install ffmpeg`. Linux: your package manager (`apt install ffmpeg`).
 2. **The binary**: download the archive for your OS from the [Releases](https://github.com/FranprzDev/reelsmith/releases)
    page (Windows: `reelsmith-<version>-x86_64-pc-windows-msvc.zip`, which carries the FFmpeg DLLs it links against) and
-   unpack it into a folder such as `C:\Tools\reelsmith\` (Windows) or `~/.local/bin/` (macOS / Linux). Until the first
-   release is tagged, the same archives are attached to the latest run of the `release` workflow (Actions tab), or build
+   unpack it into a folder such as `C:\Tools\reelsmith\` (Windows) or `~/.local/bin/` (macOS / Linux), or build
    from source (below).
 3. **Register it with your host** (next section) and restart the host.
 
