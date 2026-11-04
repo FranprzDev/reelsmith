@@ -113,8 +113,19 @@ fn link(src: &Path, dir: &Path, name: &str) -> Result<()> {
     if dst.symlink_metadata().is_ok() {
         std::fs::remove_file(&dst)?;
     }
-    std::os::unix::fs::symlink(src, &dst).with_context(|| format!("linking {} into the HyperFrames project", src.display()))?;
+    link_file(src, &dst).with_context(|| format!("linking {} into the HyperFrames project", src.display()))?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn link_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+// Windows symlinks need elevated privileges or Developer Mode; copy the asset instead.
+#[cfg(windows)]
+fn link_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dst).map(|_| ())
 }
 
 pub fn write_project(p: &Plan, r: Res) -> Result<PathBuf> {
