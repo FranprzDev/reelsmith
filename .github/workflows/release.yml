@@ -85,7 +85,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: reelsmith-${{ matrix.target }}
-          path: dist/*.*
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           retention-days: 14
 
   publish:
