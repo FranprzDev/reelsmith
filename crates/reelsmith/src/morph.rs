@@ -304,6 +304,7 @@ const FRAME_JS: &str = r#"(function(){
 struct Morph {
     // drop order matters: the context must go before its runtime
     ctx: JsContext,
+    #[allow(dead_code)] // kept to own the runtime the context lives on
     rt: Runtime,
     pairs: usize,
 }
