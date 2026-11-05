@@ -8,6 +8,7 @@ mod brief;
 mod clips;
 mod diagram;
 mod jobs;
+mod morph;
 mod sample;
 mod server;
 mod stylize;
