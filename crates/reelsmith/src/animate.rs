@@ -201,7 +201,7 @@ fn cfg(msg: String) -> anyhow::Error {
 }
 
 impl Easing {
-    fn at(self, x: f64) -> f64 {
+    pub(crate) fn at(self, x: f64) -> f64 {
         let x = ease::clamp(x);
         match self {
             Easing::EaseOut => ease::eout(x),
@@ -247,11 +247,11 @@ fn pose(anim: Animation, k: f64, u: f64, slide: f64) -> Pose {
 }
 
 /// Canvas and artwork boxes, in output pixels.
-struct Layout {
-    cw: u32,
-    ch: u32,
-    aw: f64,
-    ah: f64,
+pub(crate) struct Layout {
+    pub(crate) cw: u32,
+    pub(crate) ch: u32,
+    pub(crate) aw: f64,
+    pub(crate) ah: f64,
     /// how far `slide_up` travels
     slide: f64,
 }
@@ -260,7 +260,7 @@ fn even(x: f64) -> u32 {
     ((x / 2.0).round() as u32).max(1) * 2
 }
 
-fn layout(width: Width, size: usvg::Size, needs_rotation_room: bool) -> Layout {
+pub(crate) fn layout(width: Width, size: usvg::Size, needs_rotation_room: bool) -> Layout {
     let cw = width.px() as f64;
     let aspect = size.height() as f64 / size.width() as f64;
     let pad = 0.12 * cw;
@@ -278,14 +278,14 @@ fn layout(width: Width, size: usvg::Size, needs_rotation_room: bool) -> Layout {
     Layout { cw: even(cw), ch: even(ah + 2.0 * pad), aw, ah, slide: (0.25 * ah).min(0.9 * pad) }
 }
 
-fn usvg_options(svg: &Path) -> usvg::Options<'static> {
+pub(crate) fn usvg_options(svg: &Path) -> usvg::Options<'static> {
     let mut opt = usvg::Options { resources_dir: svg.parent().map(Path::to_path_buf), ..Default::default() };
     opt.fontdb_mut().load_system_fonts();
     opt
 }
 
 /// Every `<text>` must have been shaped with an installed font; usvg drops text it cannot shape.
-fn check_text(g: &usvg::Group, source: &str) -> Result<()> {
+pub(crate) fn check_text(g: &usvg::Group, source: &str) -> Result<()> {
     fn shaped(g: &usvg::Group) -> (usize, usize) {
         let (mut total, mut ok) = (0, 0);
         for n in g.children() {
@@ -356,7 +356,7 @@ struct DashPath {
     length: Option<f64>,
 }
 
-fn parse_attrs(tag: &str) -> Result<Vec<(String, String)>> {
+pub(crate) fn parse_attrs(tag: &str) -> Result<Vec<(String, String)>> {
     let mut out = vec![];
     let mut rest = tag.trim_start_matches("<path").trim_end_matches("/>").trim_end_matches('>');
     loop {
@@ -493,7 +493,7 @@ impl DrawOn {
 }
 
 /// Straight (non-premultiplied) RGBA bytes for ffmpeg's `rgba` input.
-fn straight_rgba(pm: &Pixmap, out: &mut Vec<u8>) {
+pub(crate) fn straight_rgba(pm: &Pixmap, out: &mut Vec<u8>) {
     out.clear();
     for px in pm.pixels() {
         let c = px.demultiply();
@@ -501,7 +501,7 @@ fn straight_rgba(pm: &Pixmap, out: &mut Vec<u8>) {
     }
 }
 
-fn encoder_args(codec: AlphaCodec) -> Vec<&'static str> {
+pub(crate) fn encoder_args(codec: AlphaCodec) -> Vec<&'static str> {
     match codec {
         AlphaCodec::Qtrle => vec!["-c:v", "qtrle", "-pix_fmt", "argb"],
         AlphaCodec::Prores4444 => vec!["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-alpha_bits", "16", "-vendor", "apl0"],

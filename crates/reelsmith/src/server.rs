@@ -4,6 +4,7 @@ use crate::brief::{self, BriefWritten, CreateProjectArgs, ProjectCreated, WriteB
 use crate::clips::{self, ClipInfo, ClipList};
 use crate::diagram::{self, DrawDiagramArgs, DrawnDiagram};
 use crate::jobs::{JobStatus, Jobs};
+use crate::morph::{self, MorphSvgArgs, MorphedSvg};
 use crate::sample;
 use crate::stylize::{self, StylizeClipArgs, StylizedClip};
 use promo::encode::{Backend, EncoderChoice};
@@ -30,7 +31,9 @@ job_id: call get_status. Burned-in captions are off by default (an SRT is writte
 text: use the user's own wording. To open or close an ad with a logo, animate_svg turns an SVG into an alpha .mov: \
 write it into the project's motion folder and use its asset_name as a beat overlay (intro) or as end_card.asset. \
 draw_diagram does the same straight from Mermaid diagram text (flowchart, sequence, state, gantt, pie, ...), \
-rendered by the embedded Pele engine and drawn stroke by stroke with the default draw_on animation.";
+rendered by the embedded Pele engine and drawn stroke by stroke with the default draw_on animation. \
+To transform one shape into another (a logo reveal, an icon transition), morph_svg morphs every filled path of one \
+SVG into another SVG's shapes and returns the same kind of alpha .mov.";
 
 /// Seconds `render` waits before handing back a job id (hosts such as Codex time tool calls out at 60 s).
 const DEFAULT_WAIT_S: u64 = 45;
@@ -182,6 +185,11 @@ impl Reelsmith {
     #[tool(description = "Animate an SVG (logo, icon, badge) into a transparent motion graphic: an alpha .mov (qtrle or ProRes 4444) at 30 or 60 fps with an entrance preset (fade_scale, slide_up, pop, draw_on, spin, glow), an easing, an optional hold and exit. Returns the .mov, its frame count and duration and a PNG preview. Save it in the project's motion folder and use asset_name as a beat overlay (intro logo) or end_card.asset.")]
     async fn animate_svg(&self, Parameters(a): Parameters<AnimateSvgArgs>) -> Result<Json<AnimatedSvg>, String> {
         Ok(Json(blocking(move || animate::animate(&a)).await?))
+    }
+
+    #[tool(description = "Morph the shapes of one SVG into the shapes of another as a transparent motion graphic: an alpha .mov (qtrle or ProRes 4444) at 30 or 60 fps where every filled path of from_svg smoothly transforms into the matching path of to_svg (equal path counts morph pairwise; one shape can split into many or many merge into one; fill colors lerp alongside), with an easing, an optional hold on the final shape and an optional morph back. Both SVGs are fitted to the same square canvas, so the morph reads as pure shape transformation. Works on filled shapes: outline strokes first (stroke to path). Returns the .mov, its frame count and duration, the path-pair count and a PNG preview of the mid-morph frame. Save it in the project's motion folder and use asset_name as a beat overlay or end_card.asset.")]
+    async fn morph_svg(&self, Parameters(a): Parameters<MorphSvgArgs>) -> Result<Json<MorphedSvg>, String> {
+        Ok(Json(blocking(move || morph::morph(&a)).await?))
     }
 
     #[tool(description = "Draw a Mermaid diagram as a self-drawing motion graphic: renders the source to SVG with the embedded Pele engine (every Mermaid 12.1 type: flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, gantt, pie, mindmap, timeline, sankey-beta and more) and animates it like animate_svg (default draw_on: strokes draw themselves, then fills fade in; theme light or dark). Returns the alpha .mov, the resolved SVG written next to it, a PNG preview and the detected diagram type. Save the .mov in the project's motion folder and use asset_name as a beat overlay or end_card.asset.")]
