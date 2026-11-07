@@ -44,9 +44,9 @@ impl Overlay {
     pub fn label(&self) -> String {
         self.asset.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     }
-    /// cache key of a measured crop
+    /// cache key of a measured crop (the asset's fingerprint keeps a replaced same-name file from reusing it)
     pub fn crop_key(&self) -> String {
-        format!("{}|{:?}", self.asset.display(), self.crop)
+        format!("{}|{:?}|{}", self.asset.display(), self.crop, file_fingerprint(&self.asset))
     }
 }
 
@@ -507,6 +507,15 @@ impl Plan {
     }
     pub fn load_json(path: &Path) -> anyhow::Result<Self> {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
+}
+
+/// A cheap change fingerprint of a media file (byte length + modification time) for cache stamps, so replacing a
+/// file with another of the same name re-cuts its plates and re-measures its crop instead of serving stale frames.
+pub fn file_fingerprint(p: &Path) -> String {
+    match std::fs::metadata(p) {
+        Ok(m) => format!("{}:{:?}", m.len(), m.modified().ok()),
+        Err(_) => "missing".into(),
     }
 }
 
