@@ -6,7 +6,7 @@
 use crate::config::{CropMode, Fit, Res};
 use crate::encode::Backend;
 use crate::error::MissingInput;
-use crate::plan::{Overlay, Plan, key_of};
+use crate::plan::{Overlay, Plan, file_fingerprint, key_of};
 use crate::pool;
 use crate::progress::{Events, Stage};
 use anyhow::{Context, Result};
@@ -75,7 +75,7 @@ fn cut_shot(plan: &Plan, r: Res, i: usize, backend: &Backend) -> Result<Option<S
     let fps = plan.fps;
     let (a, b) = (plan.fi(sh.t0), plan.fi(sh.t1));
     let n = b - a;
-    let key = key_of(&format!("{} {} {a} {n} {ow}x{oh} {} {:?} {:?}", sh.clip.display(), sh.src_in, sh.blur, sh.focus, plan.look.fit));
+    let key = key_of(&format!("{} {} {} {a} {n} {ow}x{oh} {} {:?} {:?}", sh.clip.display(), file_fingerprint(&sh.clip), sh.src_in, sh.blur, sh.focus, plan.look.fit));
     let stamp = dir.join(format!(".shot_{i:03}"));
     if n == 0 || (fresh(&stamp, &key) && dir.join(Plan::bg_name(b - 1)).exists()) {
         return Ok(None);
@@ -122,7 +122,7 @@ fn cut_overlay(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
     let n = plan.fi(o.t1) - plan.fi(o.t0);
     let [cx, cy, cw, ch] = o.crop_box.context("overlay crop not measured")?;
     let pw = ((o.w * r.scale()) / 2.0).round() as u32 * 2;
-    let key = key_of(&format!("{} {n} {cx} {cy} {cw} {ch} {pw}", o.asset.display()));
+    let key = key_of(&format!("{} {} {n} {cx} {cy} {cw} {ch} {pw}", o.asset.display(), file_fingerprint(&o.asset)));
     let stamp = dir.join(format!(".ov_{i:02}"));
     if n == 0 || (fresh(&stamp, &key) && dir.join(Plan::ov_name(i, n - 1)).exists()) {
         return Ok(None);
