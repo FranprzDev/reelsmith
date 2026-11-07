@@ -58,8 +58,9 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
     rep.check("integrated loudness", (l.integrated_lufs - p.audio.lufs).abs() <= p.audio.lufs_tolerance, &format!("{:.2} LUFS (target {} ± {})", l.integrated_lufs, p.audio.lufs, p.audio.lufs_tolerance));
     rep.check("true peak", l.true_peak_dbtp <= p.audio.true_peak_max, &format!("{:.2} dBTP (max {})", l.true_peak_dbtp, p.audio.true_peak_max));
     rep.put("loudness_mp4", serde_json::to_value(&l)?);
-    // ---- picture
-    let blacks = media::black_frames(video, p.qa.black_min_dur, p.qa.black_pix_th)?;
+    // ---- picture (black frames + contact sheet share one decode of the video)
+    let sheet = dir.join("contact.png");
+    let blacks = media::black_frames_and_contact_sheet(video, p.qa.black_min_dur, p.qa.black_pix_th, &sheet, dur.max(frame), 6, 4, 180)?;
     rep.check("black frames", blacks.is_empty(), &if blacks.is_empty() { "none".into() } else { format!("{blacks:?}") });
     // ---- motion: a shot whose source picture never changes is a photo, not a promo shot. Measured on the
     // shot's source window (median YDIF over 15 fps samples at 160 px), so the renderer's default push-in
@@ -91,8 +92,6 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
         Some(m) => rep.check("min caption size", m >= p.qa.min_text_px, &format!("{m:.1} px at 1080p (min {})", p.qa.min_text_px)),
         None => rep.md.push_str("- captions are off (not burned in): no text-size check\n"),
     }
-    let sheet = dir.join("contact.png");
-    media::contact_sheet(video, &sheet, dur.max(frame), 6, 4, 180)?;
     if min_cap.is_some() {
         for (i, c) in p.captions.iter().enumerate() {
             media::frame_at(video, (c.t0 + 0.3).min(c.t1 - frame).max(c.t0), &dir.join(format!("cap_{i:02}.jpg")), 240)?;

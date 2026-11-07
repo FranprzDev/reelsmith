@@ -74,8 +74,36 @@ pub fn black_frames(file: &Path, min_dur: f64, pix_th: f64) -> Result<Vec<(f64, 
         .output()
         .context("running ffmpeg blackdetect")?;
     let log = String::from_utf8_lossy(&out.stderr);
+    Ok(parse_black_stretches(&log))
+}
+
+/// Parse `blackdetect`'s stderr lines into `(start, end)` stretches.
+fn parse_black_stretches(log: &str) -> Vec<(f64, f64)> {
     let num = |l: &str, key: &str| l.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|v| v.parse::<f64>().ok());
-    Ok(log.lines().filter(|l| l.contains("black_start")).filter_map(|l| Some((num(l, "black_start:")?, num(l, "black_end:")?))).collect())
+    log.lines().filter(|l| l.contains("black_start")).filter_map(|l| Some((num(l, "black_start:")?, num(l, "black_end:")?))).collect()
+}
+
+/// Black stretches and the contact sheet from ONE decode of the file (the two used to each decode the whole video):
+/// the video stream is mapped twice, once through `blackdetect` (parsed from stderr), once through the tile sheet.
+/// Same filters, same values as the separate [`black_frames`] + [`contact_sheet`] calls, at roughly half the decode
+/// cost. (Do not rewrite this as a `split` in one `-filter_complex`: the framesync between the two outputs of a
+/// split changes which frames the `fps` filter picks, so the contact sheet comes out different.)
+pub fn black_frames_and_contact_sheet(file: &Path, min_dur: f64, pix_th: f64, sheet: &Path, seconds: f64, cols: usize, rows: usize, cell_w: u32) -> Result<Vec<(f64, f64)>> {
+    let cells = (cols * rows) as f64;
+    let tile_vf = format!("fps={:.5},scale={cell_w}:-2,tile={cols}x{rows}", cells / seconds.max(0.1));
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-y", "-i"])
+        .arg(file)
+        .args(["-map", "0:v", "-vf", &format!("blackdetect=d={min_dur}:pix_th={pix_th}"), "-an", "-f", "null", "-"])
+        .args(["-map", "0:v", "-vf", &tile_vf, "-frames:v", "1", "-update", "1"])
+        .arg(sheet)
+        .output()
+        .context("running ffmpeg blackdetect + contact sheet")?;
+    if !out.status.success() {
+        bail!("ffmpeg failed for the black frames + contact sheet of {}:\n{}", file.display(), String::from_utf8_lossy(&out.stderr));
+    }
+    let log = String::from_utf8_lossy(&out.stderr);
+    Ok(parse_black_stretches(&log))
 }
 
 /// A `cols`×`rows` contact sheet spread evenly over `seconds`, each cell `cell_w` px wide.
