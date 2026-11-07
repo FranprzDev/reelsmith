@@ -148,8 +148,11 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
             ev.stage(Stage::Render, Status::Done);
 
             ev.stage(Stage::Mux, Status::Start);
-            render::mux(&p, r, o.chunk_frames, &backend, &out)?;
-            ev.log(&format!("mux: {}", out.display()));
+            if render::mux(&p, r, o.chunk_frames, &backend, &out)? {
+                ev.log(&format!("mux: {}", out.display()));
+            } else {
+                ev.log(&format!("mux: unchanged, keeping {}", out.display()));
+            }
             ev.stage(Stage::Mux, Status::Done);
         }
         crate::config::Engine::Hyperframes => {
@@ -171,7 +174,10 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
 
     let qa_v = if o.qa {
         ev.stage(Stage::Qa, Status::Start);
-        let s = qa::run(&p, r, &out)?;
+        let (s, from_cache) = qa::run_cached(&p, r, &out)?;
+        if from_cache {
+            ev.log(&format!("qa: unchanged, report {}", s.report));
+        }
         log_qa(ev, &s);
         ev.stage(Stage::Qa, if s.ok { Status::Done } else { Status::Failed });
         Some(s)

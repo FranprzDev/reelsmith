@@ -31,6 +31,35 @@ pub struct QaSummary {
     pub contact_sheet: String,
 }
 
+/// What a QA verdict on `video` depends on. Bump the tag when the checks themselves change.
+fn qa_key(p: &Plan, r: Res, video: &Path) -> String {
+    let (w, h) = p.out_size(r);
+    crate::plan::key_of(&format!(
+        "qa-v1 {} {} {} {} {:.6} {} {} {} {} {} {} {} {} {} {}",
+        file_fingerprint(video), r.tag(), p.fps, p.seconds, p.frames(), w, h, p.captions_on,
+        p.qa.black_min_dur, p.qa.black_pix_th, p.qa.min_motion, p.qa.min_text_px, p.audio.lufs, p.audio.lufs_tolerance, p.audio.true_peak_max
+    ))
+}
+
+/// QA for the build pipeline: when the MP4 and every QA parameter are unchanged since the last pass, return the
+/// cached summary instead of decoding the whole video again (a full 1080p decode is the expensive part). Explicit
+/// `promo qa` / MCP qa calls use [`run`], which always measures fresh.
+pub fn run_cached(p: &Plan, r: Res, video: &Path) -> Result<(QaSummary, bool)> {
+    let dir = p.qa_dir();
+    let key = qa_key(p, r, video);
+    if let (Ok(saved), Ok(summary)) = (std::fs::read_to_string(dir.join(".summary_key")), std::fs::read_to_string(dir.join("summary.json"))) {
+        if saved.trim() == key {
+            if let Ok(s) = serde_json::from_str::<QaSummary>(&summary) {
+                return Ok((s, true));
+            }
+        }
+    }
+    let s = run(p, r, video)?;
+    std::fs::write(dir.join("summary.json"), serde_json::to_string_pretty(&s)?)?;
+    std::fs::write(dir.join(".summary_key"), key)?;
+    Ok((s, false))
+}
+
 pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
     let dir = p.qa_dir();
     std::fs::create_dir_all(&dir)?;
