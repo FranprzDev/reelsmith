@@ -167,6 +167,9 @@ pub struct AnimateSvgArgs {
     pub exit: Option<Animation>,
     /// exit length in seconds (default: duration_s)
     pub exit_s: Option<f64>,
+    /// empty margin around the artwork, as a fraction of the canvas width (default 0.12; up to 0.3)
+    #[serde(default)]
+    pub margin_frac: Option<f64>,
     /// qtrle (default, what the promo overlays use) or prores4444
     #[serde(default)]
     pub codec: AlphaCodec,
@@ -260,10 +263,10 @@ fn even(x: f64) -> u32 {
     ((x / 2.0).round() as u32).max(1) * 2
 }
 
-pub(crate) fn layout(width: Width, size: usvg::Size, needs_rotation_room: bool) -> Layout {
+pub(crate) fn layout(width: Width, size: usvg::Size, needs_rotation_room: bool, margin_frac: f64) -> Layout {
     let cw = width.px() as f64;
     let aspect = size.height() as f64 / size.width() as f64;
-    let pad = 0.12 * cw;
+    let pad = margin_frac * cw;
     if needs_rotation_room {
         // the artwork's diagonal must fit the square canvas at every angle
         let aw = 0.88 * cw / (1.0 + aspect * aspect).sqrt();
@@ -538,7 +541,11 @@ pub fn animate(a: &AnimateSvgArgs) -> Result<AnimatedSvg> {
 
     let fps = u32::from(a.fps);
     let spins = a.animation == Animation::Spin || a.exit == Some(Animation::Spin);
-    let lay = layout(a.width, tree.size(), spins);
+    let margin = a.margin_frac.unwrap_or(0.12);
+    if !(0.0..=0.3).contains(&margin) {
+        return Err(cfg(format!("margin_frac must be between 0 and 0.3, got {margin}")));
+    }
+    let lay = layout(a.width, tree.size(), spins, margin);
     let (cw, ch) = (lay.cw, lay.ch);
     let n_in = (dur * fps as f64).round() as usize;
     let n_hold = (hold * fps as f64).round() as usize;

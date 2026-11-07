@@ -1,4 +1,5 @@
 use crate::animate::{self, AlphaCodec, AnimateSvgArgs, AnimatedSvg, Animation, Easing, Fps, Width};
+use resvg::usvg;
 use anyhow::{Context as _, Result, bail};
 use rquickjs::{Context, Runtime};
 use schemars::JsonSchema;
@@ -59,6 +60,9 @@ pub struct DrawDiagramArgs {
     #[schemars(description = "canvas width: 540, 720, 1080 or 1440 px (default 1080)")]
     #[serde(default = "animate::d_width")]
     pub width: Width,
+    #[schemars(description = "empty margin around the diagram, as a fraction of the canvas width (default 0.04 for diagrams - they need less room than logos; 0.12 matches animate_svg, up to 0.3)")]
+    #[serde(default)]
+    pub margin_frac: Option<f64>,
     #[schemars(description = "timing curve: ease_out (default), ease_in_out, back or spring")]
     #[serde(default)]
     pub easing: Easing,
@@ -88,7 +92,24 @@ pub struct DrawnDiagram {
     pub svg: PathBuf,
     #[schemars(description = "the diagram type Pele detected, such as flowchart or sequence")]
     pub diagram_type: String,
+    #[schemars(description = "how legible the diagram's smallest text is, and the overlay width it needs in a 1080-wide frame")]
+    pub legibility: Legibility,
 }
+
+/// Smallest text in the rendered output and the overlay width that keeps it readable. Text under ~24 px in a
+/// 1080-wide frame is hard to read on a phone, and under ~12 px it is lost.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Legibility {
+    #[schemars(description = "smallest text in the .mov itself, in its own pixels (the canvas is `width` px across)")]
+    pub min_text_px_native: Option<f64>,
+    #[schemars(description = "overlay width (px in a 1080-wide frame) at which the smallest text reaches 24 px; wider than 1080 means even a full-width overlay is too small")]
+    pub min_overlay_width_1080p: Option<u32>,
+    #[schemars(description = "set when the diagram needs attention to stay readable (too small even full-width, or a very wide overlay)")]
+    pub warning: Option<String>,
+}
+
+/// Text smaller than this in a 1080-wide frame is hard to read on a phone.
+const MIN_TEXT_PX_1080P: f64 = 24.0;
 
 #[derive(Debug, Deserialize)]
 struct PeleOk {
@@ -287,6 +308,29 @@ fn resolve_svg(svg: &str, theme: Theme) -> Result<String> {
     Ok(final_out)
 }
 
+/// The smallest `font-size` declared anywhere in the SVG, in SVG px. A scan of the resolved output (Pele declares
+/// sizes as `font-size` attributes or `font-size:` style declarations), so it misses sizes only reachable through
+/// unexpanded shorthand; the root's own font-size is the fallback.
+fn min_font_size(svg: &str) -> Option<f64> {
+    let mut min: Option<f64> = None;
+    let mut rest = svg;
+    while let Some(i) = rest.find("font-size") {
+        let after = &rest[i + 9..];
+        let num_start = after.find(|c: char| c.is_ascii_digit() || c == '.');
+        if let Some(ns) = num_start {
+            let num = &after[ns..];
+            let len = num.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(num.len());
+            if let Ok(v) = num[..len].parse::<f64>() {
+                if v > 0.0 && min.is_none_or(|m| v < m) {
+                    min = Some(v);
+                }
+            }
+        }
+        rest = after;
+    }
+    min
+}
+
 pub fn draw(a: &DrawDiagramArgs) -> Result<DrawnDiagram> {
     let (raw, diagram_type) = pele_render(&a.source)?;
     let resolved = resolve_svg(&raw, a.theme)?;
@@ -295,12 +339,35 @@ pub fn draw(a: &DrawDiagramArgs) -> Result<DrawnDiagram> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     std::fs::write(&svg_path, &resolved).with_context(|| format!("writing {}", svg_path.display()))?;
+    let final_svg = std::fs::read_to_string(&svg_path).with_context(|| format!("reading {}", svg_path.display()))?;
+    let tree = usvg::Tree::from_str(&final_svg, &animate::usvg_options(&svg_path)).map_err(|e| anyhow::anyhow!("parsing the resolved diagram SVG: {e}"))?;
+    let legibility = {
+        let spins = a.animation == Animation::Spin || a.exit == Some(Animation::Spin);
+        let lay = animate::layout(a.width, tree.size(), spins, a.margin_frac.unwrap_or(0.04));
+        // the artwork is placed at `lay.aw` px wide on a `lay.cw`-wide canvas; the same factor scales its text
+        let scale = lay.aw / tree.size().width() as f64;
+        let min_text_px_native = min_font_size(&final_svg).map(|px| px * scale);
+        let min_overlay_width_1080p = min_text_px_native.map(|px| (lay.cw as f64 * MIN_TEXT_PX_1080P / px).ceil() as u32);
+        let warning = match (min_text_px_native, min_overlay_width_1080p) {
+            (Some(px), Some(w)) if w > 1080 => Some(format!(
+                "smallest text is {px:.1} px at the {cw}-px canvas: even a full-width overlay in a 1080-wide frame gives under {MIN_TEXT_PX_1080P:.0} px. Re-layout the diagram taller or narrower (a flowchart with `direction TB` instead of LR, or split it into two) to make it readable.",
+                cw = lay.cw
+            )),
+            (Some(_), Some(w)) if w > 700 => Some(format!(
+                "needs an overlay at least {w} px wide in a 1080-wide frame for {MIN_TEXT_PX_1080P:.0}-px text; smaller placements will be hard to read"
+            )),
+            (None, _) => Some("no font-size found in the rendered diagram; could not estimate legibility".into()),
+            _ => None,
+        };
+        Legibility { min_text_px_native: min_text_px_native.map(|px| (px * 10.0).round() / 10.0), min_overlay_width_1080p, warning }
+    };
     let motion = animate::animate(&AnimateSvgArgs {
         svg_path: svg_path.clone(),
         animation: a.animation,
         duration_s: a.duration_s,
         fps: a.fps,
         width: a.width,
+        margin_frac: Some(a.margin_frac.unwrap_or(0.04)),
         easing: a.easing,
         hold_s: a.hold_s,
         exit: a.exit,
@@ -308,5 +375,5 @@ pub fn draw(a: &DrawDiagramArgs) -> Result<DrawnDiagram> {
         codec: a.codec,
         output: a.output.clone(),
     })?;
-    Ok(DrawnDiagram { motion, svg: svg_path, diagram_type })
+    Ok(DrawnDiagram { motion, svg: svg_path, diagram_type, legibility })
 }
