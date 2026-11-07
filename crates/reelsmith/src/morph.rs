@@ -407,7 +407,7 @@ pub fn morph(a: &MorphSvgArgs) -> Result<MorphedSvg> {
     let engine = Morph::new(&from, &to, pairing)?;
 
     let fps = u32::from(a.fps);
-    let lay = animate::layout(a.width, usvg::Size::from_wh(CANVAS as f32, CANVAS as f32).context("canonical size")?, false);
+    let lay = animate::layout(a.width, usvg::Size::from_wh(CANVAS as f32, CANVAS as f32).context("canonical size")?, false, 0.12);
     let (cw, ch) = (lay.cw, lay.ch);
     let n_in = (dur * fps as f64).round() as usize;
     let n_hold = (hold * fps as f64).round() as usize;
