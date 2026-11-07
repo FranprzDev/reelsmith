@@ -235,8 +235,8 @@ fn run(o: &Opts, ev: &Events) -> Result<Exit> {
             let out = o.out.clone().unwrap_or_else(|| p.default_out(o.res));
             let backend = o.encoder.resolve()?;
             ev.log(&backend.summary());
-            render::mux(&p, o.res, o.chunk_frames, &backend, &out)?;
-            ev.log(&format!("mux: {}", out.display()));
+            let muxed = render::mux(&p, o.res, o.chunk_frames, &backend, &out)?;
+            ev.log(&format!("mux: {}{}", if muxed { "" } else { "unchanged, keeping " }, out.display()));
             Ok(Exit::Ok)
         }
         "srt" => {

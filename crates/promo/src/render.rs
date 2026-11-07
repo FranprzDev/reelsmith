@@ -3,7 +3,7 @@ use fframes::{AudioMap, Color, CpuFrameRenderer, Duration, FFramesContext, Frame
 use crate::config::{Aspect, Res};
 use crate::encode::Backend;
 use crate::frame::FrameBuilder;
-use crate::plan::{Plan, key_of};
+use crate::plan::{Plan, file_fingerprint, key_of};
 use crate::pool;
 use crate::progress::{Events, Stage};
 use std::io::Write;
@@ -244,13 +244,39 @@ pub fn render_all(fb: &FrameBuilder, r: Res, chunk_frames: usize, retries: usize
     Ok(parts)
 }
 
-pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<()> {
+/// What the mux output depends on: every part (content fingerprint), the mastered mix, the cut length and the
+/// fixed audio encode settings, plus the destination path.
+fn mux_key(p: &Plan, work: &Path, rs: &[(usize, usize)], out: &Path) -> Result<String> {
+    let mut s = format!("mux-v2 {} {} {:.6} aac-192k-faststart {}", p.fps, rs.len(), p.seconds, out.display());
+    for (k, _) in rs.iter().enumerate() {
+        let part = work.join(format!("part_{k:03}.{PART_EXT}"));
+        anyhow::ensure!(part.exists(), "chunk {k} is not rendered yet (promo render)");
+        s.push_str(&format!(" {k}:{}", key_of(&file_fingerprint(&part))));
+    }
+    anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
+    s.push_str(&format!(" audio:{}", key_of(&file_fingerprint(&p.audio_wav()))));
+    Ok(s)
+}
+
+/// Join the rendered chunks and mux the mastered audio into `out`. Skips (returns false) when the parts, the mix
+/// and the destination are unchanged since the last mux AND the output file is still exactly what that mux wrote -
+/// so an externally edited or replaced output is always re-muxed, never kept by mistake.
+pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<bool> {
     let work = chunks_dir(p, r);
     let ranges = ranges(p, chunk_frames);
+    let key = mux_key(p, &work, &ranges, out)?;
+    let key_file = work.join("mux.key");
+    if out.is_file() {
+        if let Ok(saved) = std::fs::read_to_string(&key_file) {
+            let mut lines = saved.lines();
+            if lines.next() == Some(key.as_str()) && lines.next() == Some(crate::plan::file_fingerprint(out).as_str()) {
+                return Ok(false);
+            }
+        }
+    }
     let mut list = String::new();
     for (k, &(a, b)) in ranges.iter().enumerate() {
         let part = work.join(format!("part_{k:03}.{PART_EXT}"));
-        anyhow::ensure!(part.exists(), "chunk {k} is not rendered yet (promo render)");
         let path = part.display().to_string().replace('\\', "\\\\").replace('\'', "'\\''");
         list.push_str(&format!("file '{path}'\nduration {:.12}\n", (b - a) as f64 / p.fps as f64));
     }
@@ -284,5 +310,6 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
     }
     std::fs::copy(&tmp, out).with_context(|| format!("copying the MP4 to {}", out.display()))?;
     let _ = std::fs::remove_file(&tmp);
-    Ok(())
+    std::fs::write(&key_file, format!("{key}\n{}", crate::plan::file_fingerprint(out)))?;
+    Ok(true)
 }
