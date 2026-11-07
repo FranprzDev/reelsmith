@@ -5,6 +5,14 @@
 use crate::config::Res;
 use crate::frame::FrameBuilder;
 use crate::plan::Plan;
+
+// NOTE: duplicate of plan::file_fingerprint from the plate-fingerprint branch; switch to that one once it lands.
+fn file_fingerprint(p: &Path) -> String {
+    match std::fs::metadata(p) {
+        Ok(m) => format!("{}:{:?}", m.len(), m.modified().ok()),
+        Err(_) => "missing".into(),
+    }
+}
 use anyhow::Result;
 use datavid::media;
 use datavid::qa::Report;
@@ -58,26 +66,48 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
     rep.check("integrated loudness", (l.integrated_lufs - p.audio.lufs).abs() <= p.audio.lufs_tolerance, &format!("{:.2} LUFS (target {} ± {})", l.integrated_lufs, p.audio.lufs, p.audio.lufs_tolerance));
     rep.check("true peak", l.true_peak_dbtp <= p.audio.true_peak_max, &format!("{:.2} dBTP (max {})", l.true_peak_dbtp, p.audio.true_peak_max));
     rep.put("loudness_mp4", serde_json::to_value(&l)?);
-    // ---- picture
-    let blacks = media::black_frames(video, p.qa.black_min_dur, p.qa.black_pix_th)?;
+    // ---- picture (black frames + contact sheet share one decode of the video)
+    let sheet = dir.join("contact.png");
+    let blacks = media::black_frames_and_contact_sheet(video, p.qa.black_min_dur, p.qa.black_pix_th, &sheet, dur.max(frame), 6, 4, 180)?;
     rep.check("black frames", blacks.is_empty(), &if blacks.is_empty() { "none".into() } else { format!("{blacks:?}") });
     // ---- motion: a shot whose source picture never changes is a photo, not a promo shot. Measured on the
     // shot's source window (median YDIF over 15 fps samples at 160 px), so the renderer's default push-in
     // can't mask it and cut-flash frames can't hide it: a frozen frame reads ~0.0005, real clips ~1+.
     let mut shot_motion: Vec<Option<f64>> = Vec::new();
     let mut stills: Vec<String> = Vec::new();
+    // a shot's source motion does not depend on the render resolution, so the medians are cached across passes
+    // (preview / draft / final) and reruns, keyed by the clip's fingerprint and the measured window
+    let cache_path = dir.join("motion_cache.json");
+    let mut cache: std::collections::BTreeMap<String, f64> = std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut cache_changed = false;
     for (i, s) in p.shots.iter().enumerate() {
-        let mut vs: Vec<f64> = media::frame_motion(&s.clip, s.src_in, Some(s.t1 - s.t0))?.into_iter().map(|(_, v)| v).collect();
-        if vs.len() < 2 {
+        let mkey = format!("{}|{}|{}|{}", s.clip.display(), file_fingerprint(&s.clip), s.src_in, s.t1 - s.t0);
+        let median = match cache.get(&mkey) {
+            Some(&m) => Some(m),
+            None => {
+                let mut vs: Vec<f64> = media::frame_motion(&s.clip, s.src_in, Some(s.t1 - s.t0))?.into_iter().map(|(_, v)| v).collect();
+                if vs.len() < 2 {
+                    None
+                } else {
+                    vs.sort_by(f64::total_cmp);
+                    let m = vs[vs.len() / 2];
+                    cache.insert(mkey, m);
+                    cache_changed = true;
+                    Some(m)
+                }
+            }
+        };
+        let Some(median) = median else {
             shot_motion.push(None);
             continue;
-        }
-        vs.sort_by(f64::total_cmp);
-        let median = vs[vs.len() / 2];
+        };
         shot_motion.push(Some(median));
         if p.qa.min_motion > 0.0 && median < p.qa.min_motion {
             stills.push(format!("shot {i} ({:.1}-{:.1} s): median YDIF {median:.3}", s.t0, s.t1));
         }
+    }
+    if cache_changed {
+        std::fs::write(&cache_path, serde_json::to_string_pretty(&cache)?)?;
     }
     rep.check(
         "still shots",
@@ -91,8 +121,6 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
         Some(m) => rep.check("min caption size", m >= p.qa.min_text_px, &format!("{m:.1} px at 1080p (min {})", p.qa.min_text_px)),
         None => rep.md.push_str("- captions are off (not burned in): no text-size check\n"),
     }
-    let sheet = dir.join("contact.png");
-    media::contact_sheet(video, &sheet, dur.max(frame), 6, 4, 180)?;
     if min_cap.is_some() {
         for (i, c) in p.captions.iter().enumerate() {
             media::frame_at(video, (c.t0 + 0.3).min(c.t1 - frame).max(c.t0), &dir.join(format!("cap_{i:02}.jpg")), 240)?;
