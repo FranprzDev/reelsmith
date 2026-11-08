@@ -68,7 +68,7 @@ pub struct DrawDiagramArgs {
     pub easing: Easing,
     #[schemars(description = "entrance length in seconds (default: `duration_s` capped at 2.0 - long enough to read the draw-in, short enough that a diagram placed in a beat of a few seconds is fully drawn for most of it); values over `duration_s` are clamped to it; set it to `duration_s` for the old all-entrance behavior")]
     pub entrance_s: Option<f64>,
-    #[schemars(description = "seconds the diagram rests after the entrance (default: the rest of `duration_s`; the MOV ends fully drawn)")]
+    #[schemars(description = "seconds the diagram rests after the entrance (default: the rest of `duration_s` after the entrance and, when one is set, the exit; the MOV ends fully drawn before any exit)")]
     pub hold_s: Option<f64>,
     #[schemars(description = "exit preset, played as that entrance backwards (default: none)")]
     pub exit: Option<Animation>,
