@@ -66,7 +66,7 @@ pub struct DrawDiagramArgs {
     #[schemars(description = "timing curve: ease_out (default), ease_in_out, back or spring")]
     #[serde(default)]
     pub easing: Easing,
-    #[schemars(description = "entrance length in seconds (default: `duration_s` capped at 2.0 - long enough to read the draw-in, short enough that a diagram placed in a beat of a few seconds is fully drawn for most of it); set it to `duration_s` for the old all-entrance behavior")]
+    #[schemars(description = "entrance length in seconds (default: `duration_s` capped at 2.0 - long enough to read the draw-in, short enough that a diagram placed in a beat of a few seconds is fully drawn for most of it); values over `duration_s` are clamped to it; set it to `duration_s` for the old all-entrance behavior")]
     pub entrance_s: Option<f64>,
     #[schemars(description = "seconds the diagram rests after the entrance (default: the rest of `duration_s`; the MOV ends fully drawn)")]
     pub hold_s: Option<f64>,
@@ -366,8 +366,10 @@ pub fn draw(a: &DrawDiagramArgs) -> Result<DrawnDiagram> {
         Legibility { min_text_px_native: min_text_px_native.map(|px| (px * 10.0).round() / 10.0), min_overlay_width_1080p, warning }
     };
     // a diagram overlay lives inside a beat: default to a quick entrance and hold the finished diagram
-    // for the rest of `duration_s` (an explicit `entrance_s` / `hold_s` overrides the split)
-    let entrance = a.entrance_s.unwrap_or(a.duration_s.min(2.0));
+    // for the rest of `duration_s` (an explicit `entrance_s` / `hold_s` overrides the split; with an
+    // exit the hold shortens so the total stays `duration_s`)
+    let entrance = a.entrance_s.unwrap_or(a.duration_s.min(2.0)).min(a.duration_s);
+    let exit_len = if a.exit.is_some() { a.exit_s.unwrap_or(entrance) } else { 0.0 };
     let motion = animate::animate(&AnimateSvgArgs {
         svg_path: svg_path.clone(),
         animation: a.animation,
@@ -376,7 +378,7 @@ pub fn draw(a: &DrawDiagramArgs) -> Result<DrawnDiagram> {
         width: a.width,
         margin_frac: Some(a.margin_frac.unwrap_or(0.04)),
         easing: a.easing,
-        hold_s: Some(a.hold_s.unwrap_or((a.duration_s - entrance).max(0.0))),
+        hold_s: Some(a.hold_s.unwrap_or((a.duration_s - entrance - exit_len).max(0.0))),
         exit: a.exit,
         exit_s: a.exit_s,
         codec: a.codec,
