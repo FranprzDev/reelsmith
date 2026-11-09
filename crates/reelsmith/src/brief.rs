@@ -134,6 +134,18 @@ pub struct BriefWritten {
     pub plan: PlanSummary,
     /// input files the brief names that do not exist (render fails until they do)
     pub missing: Vec<String>,
+    /// for every missing clip / motion asset, the nearest existing file stems in the same folder
+    /// (nearest first) - fix the name in the brief and call write_brief again
+    pub suggestions: Vec<MissingSuggestion>,
+}
+
+/// A missing clip / motion asset and the closest names that do exist in its folder.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct MissingSuggestion {
+    /// the missing input, same entry as in `missing` ("clip ..." / "motion asset ...")
+    pub missing: String,
+    /// existing file stems in that folder, nearest first (empty when nothing is close enough)
+    pub closest: Vec<String>,
 }
 
 fn table(pairs: Vec<(&str, Option<Value>)>) -> Value {
@@ -264,5 +276,104 @@ pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
     let config = dir.join(BRIEF_FILE);
     std::fs::write(&config, format!("{header}{}", toml::to_string_pretty(&doc)?))?;
     let plan = Plan::from_file(&config, &Overrides::default())?;
-    Ok(BriefWritten { config, style_file: style, plan: pipeline::summary(&plan, Res::Preview), missing: plan.missing_inputs() })
+    let missing = plan.missing_inputs();
+    let suggestions = suggest_missing(&plan, &missing);
+    Ok(BriefWritten { config, style_file: style, plan: pipeline::summary(&plan, Res::Preview), missing, suggestions })
+}
+
+/// stems of the media files with one of `exts` directly inside `dir`
+fn media_stems(dir: &Path, exts: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .filter_map(|e| {
+                    let p = e.path();
+                    let ext = p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+                    if exts.contains(&ext.as_str()) {
+                        p.file_stem().and_then(|x| x.to_str()).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// case-insensitive Levenshtein distance (host typo correction: near names only)
+fn lev(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.to_lowercase().chars().collect();
+    let b: Vec<char> = b.to_lowercase().chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur.push((prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// the up to `n` candidates nearest to `needle`, nearest first; distant names are not suggestions
+fn closest_stems(needle: &str, candidates: &[String], n: usize) -> Vec<String> {
+    let cutoff = (needle.chars().count() / 2).max(2);
+    let mut ranked: Vec<(usize, &String)> = candidates
+        .iter()
+        .map(|c| (lev(needle, c), c))
+        .filter(|(d, _)| *d <= cutoff)
+        .collect();
+    ranked.sort_by(|(da, ca), (db, cb)| da.cmp(db).then_with(|| ca.len().cmp(&cb.len())).then_with(|| ca.cmp(cb)));
+    ranked.into_iter().take(n).map(|(_, c)| c.clone()).collect()
+}
+
+/// "did you mean" entries for the missing clips / motion assets of a resolved plan
+fn suggest_missing(plan: &Plan, missing: &[String]) -> Vec<MissingSuggestion> {
+    let mut out = vec![];
+    for m in missing {
+        let (path, dir, exts) = if let Some(p) = m.strip_prefix("clip ") {
+            (p, &plan.clips_dir, promo::plan::CLIP_EXTS)
+        } else if let Some(p) = m.strip_prefix("motion asset ") {
+            (p, &plan.motion_dir, promo::plan::MOTION_EXTS)
+        } else {
+            continue;
+        };
+        let needle = Path::new(path).file_stem().and_then(|x| x.to_str()).unwrap_or(path).to_string();
+        let closest = closest_stems(&needle, &media_stems(dir, exts), 3);
+        out.push(MissingSuggestion { missing: m.clone(), closest });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lev_basics() {
+        assert_eq!(lev("foo", "foo"), 0);
+        assert_eq!(lev("Foo", "foo"), 0);
+        assert_eq!(lev("foo", "fool"), 1);
+        assert_eq!(lev("nebulaa", "nebula"), 1);
+        assert_eq!(lev("abc", "xyz"), 3);
+    }
+
+    #[test]
+    fn closest_ranks_and_limits() {
+        let cands: Vec<String> = ["nebula", "cells", "aurora", "grid", "nebular"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(closest_stems("nebulla", &cands, 3), vec!["nebula", "nebular"]);
+        assert_eq!(closest_stems("nebula", &cands, 1), vec!["nebula"]);
+    }
+
+    #[test]
+    fn distant_names_are_not_suggested() {
+        let cands: Vec<String> = ["zzz", "qqqqqqqq"].iter().map(|s| s.to_string()).collect();
+        assert!(closest_stems("nebula", &cands, 3).is_empty());
+        let cands: Vec<String> = ["ab"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(closest_stems("ac", &cands, 3), vec!["ab"]);
+    }
 }
