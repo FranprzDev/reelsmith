@@ -134,8 +134,10 @@ pub struct BriefWritten {
     pub plan: PlanSummary,
     /// input files the brief names that do not exist (render fails until they do)
     pub missing: Vec<String>,
-    /// for every missing clip / motion asset, the nearest existing file stems in the same folder
-    /// (nearest first) - fix the name in the brief and call write_brief again
+    /// one entry per clip / motion asset in `missing`, in the same order: the nearest existing
+    /// file stems in the same folder (empty when nothing is close enough). Omitted when `missing`
+    /// is empty or names no clip / motion asset. Fix the name in the brief and call write_brief again
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<MissingSuggestion>,
 }
 
@@ -143,7 +145,7 @@ pub struct BriefWritten {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct MissingSuggestion {
     /// the missing input, same entry as in `missing` ("clip ..." / "motion asset ...")
-    pub missing: String,
+    pub input: String,
     /// existing file stems in that folder, nearest first (empty when nothing is close enough)
     pub closest: Vec<String>,
 }
@@ -277,11 +279,12 @@ pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
     std::fs::write(&config, format!("{header}{}", toml::to_string_pretty(&doc)?))?;
     let plan = Plan::from_file(&config, &Overrides::default())?;
     let missing = plan.missing_inputs();
-    let suggestions = suggest_missing(&plan, &missing);
+    let suggestions = suggest_missing(&plan.clips_dir, &plan.motion_dir, &missing);
     Ok(BriefWritten { config, style_file: style, plan: pipeline::summary(&plan, Res::Preview), missing, suggestions })
 }
 
-/// stems of the media files with one of `exts` directly inside `dir`
+/// stems of the media files with one of `exts` directly inside `dir`; an unreadable folder and a
+/// folder without media both come back empty (a suggestion list is a nicety, not a diagnostic)
 fn media_stems(dir: &Path, exts: &[&str]) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
         .map(|rd| {
@@ -291,6 +294,7 @@ fn media_stems(dir: &Path, exts: &[&str]) -> Vec<String> {
                     let p = e.path();
                     let ext = p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
                     if exts.contains(&ext.as_str()) {
+                        // non-UTF-8 stems cannot be named in a brief either, so dropping them loses nothing
                         p.file_stem().and_then(|x| x.to_str()).map(str::to_string)
                     } else {
                         None
@@ -304,7 +308,7 @@ fn media_stems(dir: &Path, exts: &[&str]) -> Vec<String> {
     v
 }
 
-/// case-insensitive Levenshtein distance (host typo correction: near names only)
+/// case-insensitive Levenshtein distance over chars (host typo correction: near names only)
 fn lev(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.to_lowercase().chars().collect();
     let b: Vec<char> = b.to_lowercase().chars().collect();
@@ -320,31 +324,50 @@ fn lev(a: &str, b: &str) -> usize {
 }
 
 /// the up to `n` candidates nearest to `needle`, nearest first; distant names are not suggestions
-fn closest_stems(needle: &str, candidates: &[String], n: usize) -> Vec<String> {
-    let cutoff = (needle.chars().count() / 2).max(2);
-    let mut ranked: Vec<(usize, &String)> = candidates
+/// (ties prefer the shorter candidate, then alphabetical - a policy locked in by the tests). The
+/// cutoff is tighter for very short needles, where a distance of 2 matches almost anything
+fn closest_stems(needle: &str, candidates: &[&str], n: usize) -> Vec<String> {
+    let len = needle.chars().count();
+    let cutoff = if len < 3 { 1 } else { (len / 2).max(2) };
+    let mut ranked: Vec<(usize, &&str)> = candidates
         .iter()
         .map(|c| (lev(needle, c), c))
         .filter(|(d, _)| *d <= cutoff)
         .collect();
     ranked.sort_by(|(da, ca), (db, cb)| da.cmp(db).then_with(|| ca.len().cmp(&cb.len())).then_with(|| ca.cmp(cb)));
-    ranked.into_iter().take(n).map(|(_, c)| c.clone()).collect()
+    ranked.into_iter().take(n).map(|(_, c)| c.to_string()).collect()
 }
 
-/// "did you mean" entries for the missing clips / motion assets of a resolved plan
-fn suggest_missing(plan: &Plan, missing: &[String]) -> Vec<MissingSuggestion> {
+fn stems_for<'a>(cache: &'a mut std::collections::HashMap<PathBuf, Vec<String>>, dir: &Path, exts: &[&str]) -> &'a [String] {
+    cache.entry(dir.to_path_buf()).or_insert_with(|| media_stems(dir, exts))
+}
+
+/// "did you mean" entries for the missing clips / motion assets of a resolved plan, in the same
+/// order they appear in `missing`; other missing inputs (font, voice-over, music) have no folder
+/// of candidates to suggest from and are skipped
+fn suggest_missing(clips_dir: &Path, motion_dir: &Path, missing: &[String]) -> Vec<MissingSuggestion> {
+    let mut clip_stems: std::collections::HashMap<PathBuf, Vec<String>> = std::collections::HashMap::new();
+    let mut motion_stems: std::collections::HashMap<PathBuf, Vec<String>> = std::collections::HashMap::new();
     let mut out = vec![];
     for m in missing {
-        let (path, dir, exts) = if let Some(p) = m.strip_prefix("clip ") {
-            (p, &plan.clips_dir, promo::plan::CLIP_EXTS)
+        let (path, base, exts, cache) = if let Some(p) = m.strip_prefix("clip ") {
+            (p, clips_dir, promo::plan::CLIP_EXTS, &mut clip_stems)
         } else if let Some(p) = m.strip_prefix("motion asset ") {
-            (p, &plan.motion_dir, promo::plan::MOTION_EXTS)
+            (p, motion_dir, promo::plan::MOTION_EXTS, &mut motion_stems)
         } else {
             continue;
         };
-        let needle = Path::new(path).file_stem().and_then(|x| x.to_str()).unwrap_or(path).to_string();
-        let closest = closest_stems(&needle, &media_stems(dir, exts), 3);
-        out.push(MissingSuggestion { missing: m.clone(), closest });
+        let p = Path::new(path);
+        // a name may carry a subpath ("intro/foo"): search the folder the file would live in
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(base);
+        let closest = match p.file_stem().and_then(|x| x.to_str()) {
+            Some(needle) => {
+                let stems = stems_for(cache, dir, exts);
+                closest_stems(needle, &stems.iter().map(|s| s.as_str()).collect::<Vec<_>>(), 3)
+            }
+            None => vec![],
+        };
+        out.push(MissingSuggestion { input: m.clone(), closest });
     }
     out
 }
@@ -364,16 +387,67 @@ mod tests {
 
     #[test]
     fn closest_ranks_and_limits() {
-        let cands: Vec<String> = ["nebula", "cells", "aurora", "grid", "nebular"].iter().map(|s| s.to_string()).collect();
+        let cands = ["nebula", "cells", "aurora", "grid", "nebular"];
         assert_eq!(closest_stems("nebulla", &cands, 3), vec!["nebula", "nebular"]);
         assert_eq!(closest_stems("nebula", &cands, 1), vec!["nebula"]);
+        assert!(closest_stems("nebulla", &[], 3).is_empty());
     }
 
     #[test]
     fn distant_names_are_not_suggested() {
-        let cands: Vec<String> = ["zzz", "qqqqqqqq"].iter().map(|s| s.to_string()).collect();
-        assert!(closest_stems("nebula", &cands, 3).is_empty());
-        let cands: Vec<String> = ["ab"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(closest_stems("ac", &cands, 3), vec!["ab"]);
+        assert!(closest_stems("nebula", &["zzz", "qqqqqqqq"], 3).is_empty());
+    }
+
+    #[test]
+    fn short_needles_use_a_tight_cutoff() {
+        // distance 1 still helps ("ac" -> "ab"), distance 2 on a 2-char name is noise ("ab" vs "cd")
+        assert_eq!(closest_stems("ac", &["ab"], 3), vec!["ab"]);
+        assert!(closest_stems("ab", &["cd"], 3).is_empty());
+        assert!(closest_stems("a", &["xy"], 3).is_empty());
+    }
+
+    fn tmp_clips(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("reelsmith-suggest-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["nebula.mp4", "cells.mp4", "badge.mov", "notes.txt"] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn suggests_for_clip_and_motion_and_skips_other_inputs() {
+        let dir = tmp_clips("e2e");
+        let missing = vec![
+            format!("clip {}/nebulaa.mp4", dir.display()),
+            format!("motion asset {}/badg.mov", dir.display()),
+            "caption font /nowhere/font.ttf".to_string(),
+        ];
+        let got = suggest_missing(&dir, &dir, &missing);
+        assert_eq!(got.len(), 2, "the font entry has no candidates folder and is skipped");
+        assert_eq!(got[0].input, missing[0]);
+        assert_eq!(got[0].closest, vec!["nebula"]);
+        assert_eq!(got[1].input, missing[1]);
+        assert_eq!(got[1].closest, vec!["badge"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn subpath_names_search_their_own_folder() {
+        let dir = tmp_clips("sub");
+        let sub = dir.join("intro");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("logo.mp4"), b"").unwrap();
+        let missing = vec![format!("clip {}/intro/logoo.mp4", dir.display())];
+        let got = suggest_missing(&dir, &dir, &missing);
+        assert_eq!(got[0].closest, vec!["logo"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn empty_missing_means_no_suggestions() {
+        let dir = tmp_clips("empty");
+        assert!(suggest_missing(&dir, &dir, &[]).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
