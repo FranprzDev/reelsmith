@@ -292,8 +292,11 @@ fn media_stems(dir: &Path, exts: &[&str]) -> Vec<String> {
                 .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
                 .filter_map(|e| {
                     let p = e.path();
-                    let ext = p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-                    if exts.contains(&ext.as_str()) {
+                    // extension matching is case-sensitive on purpose: the resolver only tries
+                    // lowercase `exts` via direct join, so accepting e.g. `.MP4` here would
+                    // suggest a bare stem that cannot resolve.
+                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or_default();
+                    if exts.contains(&ext) {
                         // non-UTF-8 stems cannot be named in a brief either, so dropping them loses nothing
                         p.file_stem().and_then(|x| x.to_str()).map(str::to_string)
                     } else {

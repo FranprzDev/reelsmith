@@ -185,3 +185,12 @@ Full numbers and setup: [`../PERFORMANCE.md`](../PERFORMANCE.md). In short:
 - [ ] Music runs to the last frame; hits land on their visual frame.
 - [ ] Rendered at the resolution the stage calls for (360p preview, 720p draft; 1080p only after the explicit OK).
 - [ ] Delivered with the SRT, QA report and a note of open decisions; nothing uploaded or published.
+
+### Missing-input hints and extension case (2026-11-09)
+
+The resolver tries bare names and then the configured lowercase media extensions. On a case-sensitive filesystem,
+`Nebula.MP4` must not produce the bare-stem hint `Nebula`: following that hint still leaves the input missing.
+The optional hint filter now matches extensions exactly. This is conservative on case-insensitive filesystems:
+some otherwise usable uppercase-extension hints are omitted there. Exact filenames still work; resolution itself
+is unchanged. Verified with real MCP calls for the uppercase case and normal `nebulaa` / `badg` typos, plus a
+fresh 360p smoke render. Do not treat a rendered smoke clip as proof that every hint edge case works.
