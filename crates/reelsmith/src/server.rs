@@ -207,7 +207,7 @@ impl Reelsmith {
         Ok(Json(blocking(move || brief::create_project(&a)).await?))
     }
 
-    #[tool(description = "Write the project's brief.toml from beats (text + clip names + optional overlay) and an optional end card, then resolve it: returns the config path to render, the timeline summary and any missing input files.")]
+    #[tool(description = "Write the project's brief.toml from beats (text + clip names + optional overlay) and an optional end card, then resolve it: returns the config path to render, the timeline summary and any missing input files, each clip / motion asset with the closest existing names in its folder (fix a typo and write the brief again).")]
     async fn write_brief(&self, Parameters(a): Parameters<WriteBriefArgs>) -> Result<Json<BriefWritten>, String> {
         Ok(Json(blocking(move || brief::write_brief(&a)).await?))
     }

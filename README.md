@@ -23,7 +23,7 @@ Burned-in captions are off by default.
 | `stylize_clip(input, style, cell_px?, color?, width?, duration_s?, output)` | rebuilds a video as ASCII art (glyphs by brightness) or ordered dithering (Bayer 8x8), in the source colors or monochrome, re-encoded as an `.mp4` with the original audio and a PNG preview; drop it in the clips folder and use it as a beat clip |
 | `make_sample_clips(folder)` | a procedural sample library (4 clips + 2 alpha motion graphics, drawn by FFmpeg) to try the flow without footage |
 | `create_project(project_dir, clips_folder, motion_folder?, aspect, music, bpm?, music_file?, captions_burned_in)` | writes the project style, `promo.toml` |
-| `write_brief(project_dir, name, beats[], end_card?)` | writes `brief.toml` (one beat per idea: text, clip names, optional overlay; `extends` the style) and returns the resolved timeline and any missing files |
+| `write_brief(project_dir, name, beats[], end_card?)` | writes `brief.toml` (one beat per idea: text, clip names, optional overlay; `extends` the style) and returns the resolved timeline and any missing files (with the closest existing names, for typos) |
 | `render(config, resolution, encoder?, captions_burned_in?, out?, wait_seconds?)` | `preview` 360p, `draft` 720p or `final` 1080p (draft/final require a completed preview of the same config and inputs, proof as `<config>.preview.json`); returns the MP4, SRT and QA report, or a `job_id` while it is still running |
 | `get_status(job_id, wait_seconds?)` | the state of a render (`running`, `succeeded`, `qa_failed`, `failed`) and its result |
 | `get_qa(config, resolution, video?)` | re-run QA on a rendered MP4 |
