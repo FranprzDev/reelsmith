@@ -153,6 +153,26 @@ Feedback collected from real review rounds. Treat it as taste guidance, not as h
   verification or after 24 h), and Studio's "we had trouble saving your video" error went away after a fresh sign-in.
 - Never commit videos, thumbnails, client clips or other large binaries to a repository.
 
+### Brief writes (`write_brief`)
+
+- **Symptom:** a rejected `write_brief` call (for example a beat with `dur_s = -1`) still changed the hash of the
+  existing `brief.toml`, so the previous working brief was lost.
+- **Cause:** `write_brief` wrote `brief.toml` first and validated it only afterwards with `Plan::from_file`; a config
+  error therefore happened after the destructive write.
+- **Fix (2026-11-10):** write the generated TOML to a unique temporary file **in the same project folder** with
+  `create_new`, validate that file with `Plan::from_file`, then commit it with `std::fs::rename` only after validation
+  succeeds. `std::fs::rename` replaces an existing target on both Unix and Windows (`MoveFileExW`, with a
+  `SetFileInformationByHandle` fallback), so no backup dance is needed. Sharing the folder keeps
+  `extends = "promo.toml"` resolving the same way, and the returned `config` path stays `<project>/brief.toml`; the
+  validated plan is re-pointed at the final name while keeping the canonical parent directory `Plan::from_file`
+  resolved. A drop guard removes the temp file when writing or validation fails, and concurrent calls use distinct
+  process/counter names. Missing media is still reported in `missing` / `suggestions`, not treated as a validation
+  failure.
+- **Limits:** the rename is atomic only within one filesystem, so the temp file deliberately lives in the project
+  folder. If `brief.toml` is a symlink, the rename replaces the link itself rather than writing through it to the
+  target (the old `std::fs::write` followed the link); the file left by `write_brief` is a regular file. There is no
+  project lock: two concurrent `write_brief` calls both validate, and the last successful rename wins.
+
 ## 4. Performance: what helped and what did not
 
 Full numbers and setup: [`../PERFORMANCE.md`](../PERFORMANCE.md). In short:

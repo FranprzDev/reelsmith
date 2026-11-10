@@ -9,7 +9,9 @@ use promo::pipeline::{self, PlanSummary};
 use promo::{Overrides, Plan, Res};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use toml::{Table, Value};
 
 pub const STYLE_FILE: &str = "promo.toml";
@@ -247,6 +249,35 @@ fn beat_value(b: &BeatArg) -> Result<Value> {
     ]))
 }
 
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// a temporary file in the project folder; removing it on drop leaves the previous brief untouched when
+/// writing, parsing or validating the new one fails
+struct TempFile {
+    path: PathBuf,
+}
+
+impl TempFile {
+    fn create(dir: &Path) -> Result<(Self, std::fs::File)> {
+        for _ in 0..100 {
+            let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(".{BRIEF_FILE}.{}.{seq}.tmp", std::process::id()));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e).with_context(|| format!("creating a temporary brief in {}", dir.display())),
+            }
+        }
+        bail!("could not create a unique temporary brief in {}", dir.display())
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
     let dir = absolute(&a.project_dir)?;
     let style = dir.join(STYLE_FILE);
@@ -275,9 +306,14 @@ pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
         ("end_card", end_card),
     ]);
     let header = "# Brief (written by Reelsmith write_brief): one [[beat]] per idea. Render it with the render tool.\n\n";
+    let text = format!("{header}{}", toml::to_string_pretty(&doc)?);
     let config = dir.join(BRIEF_FILE);
-    std::fs::write(&config, format!("{header}{}", toml::to_string_pretty(&doc)?))?;
-    let plan = Plan::from_file(&config, &Overrides::default())?;
+    let (tmp, mut file) = TempFile::create(&dir)?;
+    file.write_all(text.as_bytes()).with_context(|| format!("writing {}", tmp.path.display()))?;
+    drop(file);
+    let mut plan = Plan::from_file(&tmp.path, &Overrides::default())?;
+    std::fs::rename(&tmp.path, &config).with_context(|| format!("replacing {}", config.display()))?;
+    plan.config = plan.config.parent().unwrap_or(Path::new(".")).join(BRIEF_FILE);
     let missing = plan.missing_inputs();
     let suggestions = suggest_missing(&plan.clips_dir, &plan.motion_dir, &missing);
     Ok(BriefWritten { config, style_file: style, plan: pipeline::summary(&plan, Res::Preview), missing, suggestions })
