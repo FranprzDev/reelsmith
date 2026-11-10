@@ -2,8 +2,8 @@
 //! cut flash, the configured cues (braam / hit / whoosh), each motion overlay's own sound effect at its slot, an
 //! optional voice-over with the music ducked under it, mastered in Rust to the loudness target (−14 LUFS) with a
 //! true-peak ceiling. Written to `build/audio.wav` and skipped when nothing that shapes it changed.
-use crate::config::{CueKind, MusicKind};
-use crate::plan::{Plan, key_of};
+use crate::config::{CueKind, MusicDirection, MusicKind};
+use crate::plan::{MusicEnergy, Plan, key_of};
 use crate::progress::Events;
 use anyhow::{Context, Result};
 use datavid::audio::{Score, dsp, master, synth, write_wav};
@@ -28,10 +28,10 @@ fn pluck(sc: &Score, m: f64, dur: f64, dec: f64, amp: f64) -> Vec<f64> {
 fn procedural_bed(sc: &mut Score, p: &Plan) {
     let m = &p.music;
     let total = p.seconds;
-    let beat = 60.0 / m.bpm;
+    let beat = 60.0 / m.bpm.unwrap_or(128.0);
     let bar = 4.0 * beat;
     let (drop, outro) = (p.music_drop, p.music_outro);
-    let prog = &m.progression;
+    let prog = m.progression.as_deref().unwrap_or(&[]);
     let arp = [0usize, 1, 2, 1, 2, 0, 1, 2];
     let kick = synth::boom(sc, 0.42, 165.0, 48.0, 9.0, 2.4);
     let mut t = 0.0;
@@ -78,6 +78,143 @@ fn procedural_bed(sc: &mut Score, p: &Plan) {
         t = step as f64 * beat / 4.0;
     }
 }
+
+/// Directed procedural bed: mood-specific harmony, timbre and rhythm, with a smoothed per-scene energy envelope.
+fn directed_bed(sc: &mut Score, p: &Plan, mood: MusicDirection, energy: &[MusicEnergy]) {
+    let m = &p.music;
+    let total = p.seconds;
+    let bpm = m.bpm.unwrap_or(mood.default_bpm());
+    let beat = 60.0 / bpm;
+    let bar = 4.0 * beat;
+    let (drop, outro) = (p.music_drop, p.music_outro);
+    let prog = m.progression.as_deref().unwrap_or(&[]);
+    let energy_at = |frame: usize| -> f64 {
+        for seg in energy {
+            if frame >= seg.start_frame && frame < seg.end_frame {
+                return seg.level;
+            }
+        }
+        0.5
+    };
+    let kick = synth::boom(sc, 0.42, 165.0, 48.0, 9.0, 2.4);
+    let kick_lo = synth::boom(sc, 0.5, 90.0, 32.0, 6.0, 2.0);
+    let taiko = synth::taiko_d(sc, 1.0);
+    let mut t = 0.0;
+    let mut step = 0usize;
+    let mut energy_state = 0.5f64;
+    while t < total {
+        let b16 = step % 16;
+        let bar_i = (t / bar).floor() as usize;
+        let (root, triad) = prog[bar_i % prog.len()];
+        let frame = (t * p.fps as f64).round() as usize;
+        let target = energy_at(frame);
+        let alpha = 1.0 - (- (beat / 4.0) / 0.35).exp();
+        energy_state += (target - energy_state) * alpha;
+        let e = energy_state.clamp(0.0, 1.0);
+        let groove = t >= drop - 1e-6 && t < outro;
+        let hook = t < drop;
+        let eg = 0.45 + 0.9 * e;
+        match mood {
+            MusicDirection::Uplifting => {
+                if groove {
+                    if b16 % 4 == 0 && e > 0.25 {
+                        sc.add(t, &kick, 0.95 * eg, 0.0, 0.05);
+                    }
+                    if (b16 == 4 || b16 == 12) && e > 0.4 {
+                        let sn = synth::snare(sc, 0.55);
+                        sc.add(t, &sn, 0.8 * eg, 0.0, 0.35);
+                    }
+                    if b16 % 2 == 0 && e > 0.3 {
+                        let h = synth::hat(sc);
+                        sc.add(t, &h, if b16 % 4 == 2 { 0.5 } else { 0.25 } * (0.6 + 0.4 * e), 0.25, 0.1);
+                    }
+                    if b16 % 2 == 0 && b16 % 4 != 0 && e > 0.35 {
+                        let bs = pluck(sc, root, beat * 0.5, 7.0, 0.55);
+                        let bs = dsp::filt(&bs, 2, dsp::Kind::Low(900.0), sc.sr);
+                        sc.add(t, &bs, 0.9 * eg, 0.0, 0.0);
+                    }
+                }
+                if hook && b16 % 8 == 0 {
+                    sc.add(t, &kick, 0.35, 0.0, 0.2);
+                }
+                if t < outro + bar * 2.0 && b16 % 2 == 0 && e > 0.2 {
+                    let arp_notes = [0usize, 1, 2, 1, 2, 0, 1, 2];
+                    let mm = triad[arp_notes[(step / 2) % 8]] + 12.0;
+                    let g = if groove { 0.16 } else { 0.11 };
+                    let pl = pluck(sc, mm, beat * 0.9, 9.0, 1.0);
+                    sc.add(t, &pl, g * (0.7 + 0.5 * e), if (step / 2) % 2 == 0 { -0.35 } else { 0.35 }, 0.45);
+                }
+                if b16 == 0 {
+                    let pad = synth::pad_voice(sc, &triad, bar, 0.35, 0.25, 0.6);
+                    sc.add(t, &pad, if groove { 0.10 } else { 0.16 } * (0.7 + 0.4 * e), 0.0, 0.6);
+                }
+            }
+            MusicDirection::Calm => {
+                if groove {
+                    if b16 % 4 == 0 && e > 0.3 {
+                        let bs = pluck(sc, root, beat * 0.8, 5.0, 0.4);
+                        let bs = dsp::filt(&bs, 2, dsp::Kind::Low(600.0), sc.sr);
+                        sc.add(t, &bs, 0.5 * eg, 0.0, 0.2);
+                    }
+                    if b16 % 4 == 0 && e > 0.25 {
+                        let h = synth::hat(sc);
+                        sc.add(t, &h, 0.15 * (0.5 + 0.5 * e), 0.3, 0.15);
+                    }
+                }
+                if hook && b16 % 8 == 0 {
+                    sc.add(t, &kick, 0.2, 0.0, 0.15);
+                }
+                if t < outro + bar * 2.0 && b16 % 2 == 0 && e > 0.2 {
+                    let mm = triad[(step / 2) % 3];
+                    let pl = pluck(sc, mm + 12.0, beat * 1.2, 6.0, 0.7);
+                    sc.add(t, &pl, 0.09 * (0.6 + 0.5 * e), if (step / 2) % 2 == 0 { -0.25 } else { 0.25 }, 0.35);
+                }
+                if b16 == 0 {
+                    let pad = synth::pad_voice(sc, &triad, bar, 0.15, 0.6, 1.2);
+                    sc.add(t, &pad, if groove { 0.12 } else { 0.18 } * (0.7 + 0.4 * e), 0.0, 0.5);
+                }
+            }
+            MusicDirection::Tense => {
+                if groove {
+                    if (b16 == 0 || b16 == 8) && e > 0.25 {
+                        sc.add(t, &kick_lo, 0.85 * eg, 0.0, 0.05);
+                    }
+                    if (b16 == 4 || b16 == 12) && e > 0.4 {
+                        let sn = synth::snare(sc, 0.5);
+                        sc.add(t, &sn, 0.6 * eg, 0.0, 0.3);
+                    }
+                    if b16 % 4 == 2 && e > 0.35 {
+                        let h = synth::hat(sc);
+                        sc.add(t, &h, 0.3 * (0.5 + 0.5 * e), 0.1, 0.1);
+                    }
+                    if b16 % 4 == 0 {
+                        let bs = pluck(sc, root, beat * 0.9, 4.0, 0.6);
+                        let bs = dsp::filt(&bs, 2, dsp::Kind::Low(400.0), sc.sr);
+                        sc.add(t, &bs, 0.7 * eg, 0.0, 0.0);
+                    }
+                    if e > 0.7 && b16 == 0 {
+                        sc.add(t, &taiko, 0.5, 0.0, 0.4);
+                    }
+                }
+                if hook && b16 % 8 == 0 {
+                    sc.add(t, &kick_lo, 0.3, 0.0, 0.15);
+                }
+                if t < outro + bar * 2.0 && e > 0.25 {
+                    let mm = triad[0] + if step % 2 == 0 { 1.0 } else { -1.0 };
+                    let pl = pluck(sc, mm + 6.0, beat * 0.4, 12.0, 0.5);
+                    sc.add(t, &pl, 0.07 * (0.5 + 0.6 * e), if step % 2 == 0 { -0.4 } else { 0.4 }, 0.4);
+                }
+                if b16 == 0 {
+                    let pad = synth::pad_voice(sc, &triad, bar, 0.2, 0.3, 0.8);
+                    sc.add(t, &pad, if groove { 0.11 } else { 0.16 } * (0.7 + 0.4 * e), 0.0, 0.5);
+                }
+            }
+        }
+        step += 1;
+        t = step as f64 * beat / 4.0;
+    }
+}
+
 
 fn add_cue(sc: &mut Score, kind: CueKind, t: f64, gain: f64) {
     match kind {
@@ -143,7 +280,7 @@ fn audio_key(p: &Plan) -> String {
     let mtime = |s: &Path| std::fs::metadata(s).and_then(|m| m.modified()).map(|t| format!("{t:?}")).unwrap_or_default();
     let ovs: Vec<_> = p.overlays.iter().map(|o| json!([o.asset, o.t0, o.t1, o.sfx, mtime(&o.asset)])).collect();
     let files: Vec<String> = p.voiceover.iter().map(|v| mtime(Path::new(&v.file))).chain(p.music.file.iter().map(|f| mtime(Path::new(f)))).collect();
-    key_of(&json!({"v": 1, "s": p.seconds, "f": p.flashes, "c": p.cues, "m": p.music, "d": p.music_drop, "o": p.music_outro, "vo": p.voiceover, "a": p.audio, "ov": ovs, "files": files}).to_string())
+    key_of(&json!({"v": 2, "s": p.seconds, "fps": p.fps, "f": p.flashes, "c": p.cues, "m": p.music, "d": p.music_drop, "o": p.music_outro, "vo": p.voiceover, "a": p.audio, "ov": ovs, "files": files, "e": p.music_energy}).to_string())
 }
 
 pub fn run(p: &Plan, ev: &Events) -> Result<()> {
@@ -159,7 +296,11 @@ pub fn run(p: &Plan, ev: &Events) -> Result<()> {
     let total = p.seconds;
     let mut sc = Score::new(SR, total, p.music.seed);
     if p.music.kind == MusicKind::Procedural {
-        procedural_bed(&mut sc, p);
+        if let Some(dir) = p.music.direction {
+            directed_bed(&mut sc, p, dir, &p.music_energy);
+        } else {
+            procedural_bed(&mut sc, p);
+        }
     }
     if p.music.flash_hits {
         for &f in &p.flashes {

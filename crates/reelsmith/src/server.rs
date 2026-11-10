@@ -202,12 +202,12 @@ impl Reelsmith {
         Ok(Json(blocking(move || stylize::stylize(&a)).await?))
     }
 
-    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed, captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering).")]
+    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed (optional direction/key/bpm and energy per beat), captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering).")]
     async fn create_project(&self, Parameters(a): Parameters<CreateProjectArgs>) -> Result<Json<ProjectCreated>, String> {
         Ok(Json(blocking(move || brief::create_project(&a)).await?))
     }
 
-    #[tool(description = "Write the project's brief.toml from beats (text + clip names + optional overlay) and an optional end card, then resolve it: returns the config path to render, the timeline summary and any missing input files, each clip / motion asset with the closest existing names in its folder (fix a typo and write the brief again).")]
+    #[tool(description = "Write the project's brief.toml from beats (text + clip names + optional overlay and music energy) and an optional end card, then resolve it: returns the config path to render, the timeline summary and any missing input files, each clip / motion asset with the closest existing names in its folder (fix a typo and write the brief again). Supports procedural music direction (calm/uplifting/tense), bpm and key overrides.")]
     async fn write_brief(&self, Parameters(a): Parameters<WriteBriefArgs>) -> Result<Json<BriefWritten>, String> {
         Ok(Json(blocking(move || brief::write_brief(&a)).await?))
     }
