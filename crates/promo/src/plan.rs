@@ -50,6 +50,13 @@ impl Overlay {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MusicEnergy {
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub level: f64,
+}
+
 /// Overrides from the command line (or an upload app) that win over the config.
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
@@ -91,6 +98,8 @@ pub struct Plan {
     pub music: MusicCfg,
     pub music_drop: f64,
     pub music_outro: f64,
+    #[serde(default)]
+    pub music_energy: Vec<MusicEnergy>,
     pub voiceover: Option<VoiceoverCfg>,
     pub audio: AudioCfg,
     pub qa: QaCfg,
@@ -185,6 +194,7 @@ impl Plan {
         let mut cues = f.cue.clone();
         let mut beat_caps: Vec<Caption> = vec![];
         let mut first_beat_end = None;
+        let mut energy_segments: Vec<(f64, f64, f64)> = Vec::new();
         let mut t = 0.0;
         if !f.shot.is_empty() && !f.beat.is_empty() {
             return Err(cerr("use either [[beat]] (texts in) or [[shot]] (explicit times), not both".into()));
@@ -236,6 +246,12 @@ impl Plan {
                 cues.push(CueCfg { t, kind: k, gain: 0.22 });
             }
             beat_caps.extend(script::spread(&gs, t + lead, t + dur));
+            if let Some(e) = b.energy {
+                if !e.is_finite() || !(0.0..=1.0).contains(&e) {
+                    return Err(cerr(format!("beat energy {e} must be 0..=1")));
+                }
+                energy_segments.push((t, t + dur, e));
+            }
             t = snap(t + dur);
             if i == 0 {
                 first_beat_end = Some(t);
@@ -257,6 +273,12 @@ impl Plan {
                 flashes.push(t);
             }
             beat_caps.extend(script::spread(&script::groups(&e.text), t, t + e.dur.min(1.3)));
+            if let Some(ee) = e.energy {
+                if !ee.is_finite() || !(0.0..=1.0).contains(&ee) {
+                    return Err(cerr(format!("end_card energy {ee} must be 0..=1")));
+                }
+                energy_segments.push((t, t1, ee));
+            }
             end_card_t0 = Some(t);
             t = t1;
         }
@@ -298,6 +320,29 @@ impl Plan {
             v
         });
         let mut music = f.music.clone();
+        if music.key.is_some() && music.direction.is_none() {
+            return Err(cerr("music.key requires music.direction (otherwise it is ignored)".into()));
+        }
+        if music.direction.is_some() && music.kind != MusicKind::Procedural {
+            return Err(cerr("music.direction only applies when music.kind = \"procedural\"".into()));
+        }
+        if music.key.is_some() && music.progression.is_some() {
+            return Err(cerr("music.key is ignored when music.progression is set explicitly".into()));
+        }
+        if let Some(key) = music.key {
+            if !key.is_finite() || key.fract() != 0.0 || !(36.0..=72.0).contains(&key) {
+                return Err(cerr(format!("music.key = {key}: must be a finite integer MIDI note 36..=72")));
+            }
+        }
+        if let Some(dir) = music.direction {
+            if music.progression.is_none() {
+                let key = music.key.unwrap_or(dir.default_key());
+                music.progression = Some(dir.default_progression(key));
+            }
+        }
+        if music.progression.is_none() {
+            music.progression = Some(crate::config::default_music_progression());
+        }
         music.file = music.file.as_deref().map(|p| abs(p).display().to_string());
         let mut caption_style = f.captions.clone();
         caption_style.words.clear();
@@ -328,6 +373,7 @@ impl Plan {
             music,
             music_drop,
             music_outro,
+            music_energy: energy_segments.into_iter().map(|(a, b, e)| MusicEnergy { start_frame: (a * f.video.fps as f64).round() as usize, end_frame: (b * f.video.fps as f64).round() as usize, level: e }).filter(|seg| seg.start_frame < seg.end_frame).collect(),
             voiceover,
             audio: f.audio.clone(),
             qa: f.qa.clone(),
@@ -388,8 +434,57 @@ impl Plan {
         if self.music.kind == MusicKind::File && self.music.file.is_none() {
             return Err(cerr("music.kind = \"file\" needs music.file".into()));
         }
-        if self.music.kind == MusicKind::Procedural && self.music.progression.is_empty() {
+        if self.music.kind == MusicKind::Procedural && self.music.progression.as_ref().map_or(true, Vec::is_empty) {
             return Err(cerr("music.kind = \"procedural\" needs a non-empty music.progression".into()));
+        }
+        if let Some(bpm) = self.music.bpm {
+            if !bpm.is_finite() || !(1.0..=300.0).contains(&bpm) {
+                return Err(cerr(format!("music.bpm = {bpm}: must be between 1 and 300")));
+            }
+        }
+        if self.music.direction.is_none() && self.music.key.is_some() {
+            return Err(cerr("music.key requires music.direction (otherwise it is ignored)".into()));
+        }
+        if self.music.direction.is_some() && self.music.kind != MusicKind::Procedural {
+            return Err(cerr("music.direction only applies when music.kind = \"procedural\"".into()));
+        }
+        if let Some(key) = self.music.key {
+            if !key.is_finite() || key.fract() != 0.0 || !(36.0..=72.0).contains(&key) {
+                return Err(cerr(format!("music.key = {key}: must be a finite integer MIDI note 36..=72")));
+            }
+        }
+        if let Some(prog) = &self.music.progression {
+            for (root, triad) in prog {
+                if !root.is_finite() || !(0.0..=127.0).contains(root) {
+                    return Err(cerr(format!("music progression root {root} must be a MIDI note 0..=127")));
+                }
+                for n in triad {
+                    if !n.is_finite() || !(0.0..=127.0).contains(n) {
+                        return Err(cerr(format!("music progression note {n} must be a MIDI note 0..=127")));
+                    }
+                }
+            }
+        }
+        for seg in &self.music_energy {
+            if !seg.level.is_finite() || !(0.0..=1.0).contains(&seg.level) {
+                return Err(cerr(format!("music energy {} at frames {}..{}: must be 0..=1", seg.level, seg.start_frame, seg.end_frame)));
+            }
+            if seg.start_frame >= seg.end_frame {
+                return Err(cerr(format!("music energy segment {}..{} is empty", seg.start_frame, seg.end_frame)));
+            }
+            if seg.end_frame > self.frames() {
+                return Err(cerr(format!("music energy segment {}..{} exceeds the video ({} frames)", seg.start_frame, seg.end_frame, self.frames())));
+            }
+        }
+        // reject overlapping energy segments
+        for i in 0..self.music_energy.len() {
+            for j in (i + 1)..self.music_energy.len() {
+                let a = &self.music_energy[i];
+                let b = &self.music_energy[j];
+                if a.start_frame < b.end_frame && b.start_frame < a.end_frame {
+                    return Err(cerr(format!("music energy segments {}..{} and {}..{} overlap", a.start_frame, a.end_frame, b.start_frame, b.end_frame)));
+                }
+            }
         }
         Ok(())
     }
@@ -527,4 +622,78 @@ pub fn key_of<T: Hash>(x: &T) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     x.hash(&mut h);
     format!("{:016x}", h.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PromoFile;
+
+    fn resolve_str(s: &str) -> Result<Plan, ConfigError> {
+        let dir = std::env::temp_dir().join(format!("reelsmith-plan-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let f = PromoFile::from_toml_str(s, &dir)?;
+        Plan::resolve(f, &dir.join("cfg.toml"), &Overrides::default())
+    }
+
+    const SHOT: &str = r#"
+[video]
+name = "t"
+aspect = "9:16"
+
+[[shot]]
+clip = "c"
+dur = 1.0
+"#;
+
+    #[test]
+    fn default_omission_uses_default_progression() {
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\n");
+        let p = resolve_str(&cfg).unwrap();
+        assert!(p.music.direction.is_none());
+        assert_eq!(p.music.progression, Some(crate::config::default_music_progression()));
+    }
+
+    #[test]
+    fn explicit_default_progression_retained() {
+        let cfg = format!(
+            "{SHOT}\n[music]\nkind = \"procedural\"\ndirection = \"calm\"\nprogression = [[33.0, [57.0, 60.0, 64.0]], [29.0, [53.0, 57.0, 60.0]], [36.0, [55.0, 60.0, 64.0]], [31.0, [55.0, 59.0, 62.0]]]\n"
+        );
+        let p = resolve_str(&cfg).unwrap();
+        assert_eq!(p.music.progression, Some(crate::config::default_music_progression()));
+    }
+
+    #[test]
+    fn invalid_key_rejected() {
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\ndirection = \"calm\"\nkey = 10\n");
+        assert!(resolve_str(&cfg).is_err());
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\ndirection = \"calm\"\nkey = 60.5\n");
+        assert!(resolve_str(&cfg).is_err());
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\nkey = 60\n");
+        assert!(resolve_str(&cfg).is_err());
+    }
+
+    #[test]
+    fn invalid_bpm_rejected() {
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\nbpm = 0\n");
+        assert!(resolve_str(&cfg).is_err());
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\nbpm = 500\n");
+        assert!(resolve_str(&cfg).is_err());
+    }
+
+    #[test]
+    fn invalid_energy_rejected() {
+        let cfg = r#"
+[video]
+name = "t"
+aspect = "9:16"
+
+[[beat]]
+text = "HI"
+dur = 1.0
+clips = [{ clip = "c", in = 0.0, dur = 1.0 }]
+energy = 2.0
+"#;
+        assert!(resolve_str(cfg).is_err());
+    }
 }

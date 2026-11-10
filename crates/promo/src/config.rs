@@ -370,6 +370,9 @@ pub struct BeatCfg {
     /// a music cue on the cut into this beat
     #[serde(default)]
     pub cue: Option<CueKind>,
+    /// relative music energy for this beat (0..=1); used by directed procedural music
+    #[serde(default, alias = "music_energy", alias = "intensity", alias = "level")]
+    pub energy: Option<f64>,
 }
 
 /// The closing card: an asset over the last clip, which is blurred after `sharp` seconds.
@@ -400,6 +403,9 @@ pub struct EndCardCfg {
     /// caption over the first second of the card (optional)
     #[serde(default)]
     pub text: String,
+    /// relative music energy for this card (0..=1); used by directed procedural music
+    #[serde(default, alias = "music_energy", alias = "intensity", alias = "level")]
+    pub energy: Option<f64>,
 }
 fn d_end_dur() -> f64 {
     4.9
@@ -510,18 +516,74 @@ pub enum MusicKind {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum MusicDirection {
+    Calm,
+    Uplifting,
+    Tense,
+}
+
+impl MusicDirection {
+    pub fn default_bpm(self) -> f64 {
+        match self {
+            MusicDirection::Calm => 72.0,
+            MusicDirection::Uplifting => 124.0,
+            MusicDirection::Tense => 96.0,
+        }
+    }
+    pub fn default_key(self) -> f64 {
+        match self {
+            MusicDirection::Calm => 48.0,
+            MusicDirection::Uplifting => 60.0,
+            MusicDirection::Tense => 44.0,
+        }
+    }
+    pub fn default_progression(self, key: f64) -> Vec<(f64, [f64; 3])> {
+        match self {
+            MusicDirection::Calm => vec![
+                (key, [key + 12.0, key + 15.0, key + 19.0]),
+                (key + 8.0, [key + 20.0, key + 23.0, key + 27.0]),
+                (key + 3.0, [key + 15.0, key + 19.0, key + 22.0]),
+                (key + 10.0, [key + 22.0, key + 25.0, key + 29.0]),
+            ],
+            MusicDirection::Uplifting => vec![
+                (key, [key + 12.0, key + 16.0, key + 19.0]),
+                (key + 7.0, [key + 19.0, key + 23.0, key + 26.0]),
+                (key + 9.0, [key + 21.0, key + 24.0, key + 28.0]),
+                (key + 5.0, [key + 17.0, key + 21.0, key + 24.0]),
+            ],
+            MusicDirection::Tense => vec![
+                (key, [key + 12.0, key + 15.0, key + 18.0]),
+                (key + 6.0, [key + 18.0, key + 21.0, key + 24.0]),
+                (key + 10.0, [key + 22.0, key + 25.0, key + 28.0]),
+                (key + 5.0, [key + 17.0, key + 20.0, key + 23.0]),
+            ],
+        }
+    }
+}
+
+pub fn default_music_progression() -> Vec<(f64, [f64; 3])> {
+    d_prog()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MusicCfg {
     #[serde(default)]
     pub kind: MusicKind,
-    #[serde(default = "d_bpm")]
-    pub bpm: f64,
+    #[serde(default, alias = "mood", alias = "music_mood", alias = "music_direction")]
+    pub direction: Option<MusicDirection>,
+    #[serde(default, alias = "key_midi", alias = "root", alias = "root_midi", alias = "key_note")]
+    pub key: Option<f64>,
+    #[serde(default)]
+    pub bpm: Option<f64>,
     #[serde(default = "d_seed")]
     pub seed: u64,
     /// one chord per bar: `[bass root midi, [triad midi x3]]`; default Am F C G
-    #[serde(default = "d_prog")]
-    pub progression: Vec<(f64, [f64; 3])>,
+    #[serde(default)]
+    pub progression: Option<Vec<(f64, [f64; 3])>>,
     /// groove starts here (default: the first flash, else the end of the first beat)
     #[serde(default)]
     pub drop: Option<f64>,
@@ -541,9 +603,6 @@ pub struct MusicCfg {
     /// fade-out at the end (s)
     #[serde(default = "d_fade")]
     pub fade_out: f64,
-}
-fn d_bpm() -> f64 {
-    128.0
 }
 fn d_seed() -> u64 {
     4

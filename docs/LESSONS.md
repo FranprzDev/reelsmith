@@ -229,3 +229,9 @@ generic `"render pipeline panicked"` failure, so the single-job slot is released
 Limits: `catch_unwind` only catches unwinding panics. A binary built with `panic = "abort"` (or an aborting panic)
 cannot be caught; the MCP server relies on the default `panic = "unwind"` build. The catch also does not make a
 panicking pipeline safe to retry beyond releasing the job slot, and the panic payload is deliberately not exposed.
+
+### Musical feature limits (2026-11-10)
+
+The directed procedural bed takes its mood from an explicit host choice (`direction`); there is no automatic content
+analysis of the clips or copy. QA reports objective targets (duration, loudness, true peak, motion, caption size) and
+never judges taste.

@@ -28,6 +28,40 @@ with the word-by-word pop.
 | QA | `[qa]` | duration, size, fps, audio stream, integrated loudness, true peak, black frames, still shots (per-shot source motion, median YDIF; `min_motion`, 0 disables), min caption size (only when burned in), contact sheet, caption frames |
 | Styles | `extends = "style.toml"` | inherit everything from another config (tables merge, arrays are replaced); paths resolve against the file that declares them |
 
+### Directed procedural music
+
+Set `[music] direction = "calm" | "uplifting" | "tense"` (aliases `mood`) to use a mood-specific bed with a
+per-scene energy envelope. The host (or the person writing the brief) chooses the mood; there is no automatic
+content analysis. Optional `key` is a MIDI root note (integer, 36..=72, default mood key) - not a key name - and
+`bpm` (default mood bpm, 1..=300); `progression` is auto-generated unless you set it explicitly. `key` is ignored
+(and rejected) when `progression` is set explicitly - supply one or the other. `direction` (and `key`/`bpm`) only apply
+when `kind = "procedural"`; with `kind = "file"` or `"none"` they are rejected. Per beat/end card,
+set `energy = 0.2` (aliases `music_energy`, `intensity`, `level`) to change density and loudness:
+
+```toml
+[music]
+kind = "procedural"
+direction = "uplifting"
+key = 60
+bpm = 124
+
+[[beat]]
+text = "HOOK"
+clips = ["a@0"]
+energy = 0.9
+
+[[beat]]
+text = "DETAIL"
+clips = ["b@0"]
+energy = 0.4
+```
+
+Energy without `direction` is ignored (the legacy bed has no per-scene envelope). The envelope is an event-level
+exponential smoothed over sixteenth-note steps (beat/4) (about 350 ms for a new note gain to ramp in); already-triggered tails
+continue and `energy = 0` lowers density and loudness but is not silence.
+
+Omitting `direction` keeps the legacy procedural bed byte-identical.
+
 ## Make a new video from texts + clips
 
 1. **Set up the toolchain** (once per sandbox / machine): see "Sandbox lessons" below, then
