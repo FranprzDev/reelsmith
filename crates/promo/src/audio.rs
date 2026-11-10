@@ -279,8 +279,8 @@ fn duck_gain(vo: &[Vec<f64>; 2], n: usize, offset: f64, duck_db: f64) -> Vec<f64
 fn audio_key(p: &Plan) -> String {
     let mtime = |s: &Path| std::fs::metadata(s).and_then(|m| m.modified()).map(|t| format!("{t:?}")).unwrap_or_default();
     let ovs: Vec<_> = p.overlays.iter().map(|o| json!([o.asset, o.t0, o.t1, o.sfx, mtime(&o.asset)])).collect();
-    let files: Vec<String> = p.voiceover.iter().map(|v| mtime(Path::new(&v.file))).chain(p.music.file.iter().map(|f| mtime(Path::new(f)))).collect();
-    key_of(&json!({"v": 2, "s": p.seconds, "fps": p.fps, "f": p.flashes, "c": p.cues, "m": p.music, "d": p.music_drop, "o": p.music_outro, "vo": p.voiceover, "a": p.audio, "ov": ovs, "files": files, "e": p.music_energy}).to_string())
+    let files: Vec<String> = p.voiceover.iter().map(|v| mtime(Path::new(&v.file))).chain(p.music.file.iter().map(|f| mtime(Path::new(f)))).chain(p.music.soundfont.iter().map(|f| crate::plan::file_fingerprint(Path::new(f)))).collect();
+    key_of(&json!({"v": 3, "s": p.seconds, "fps": p.fps, "f": p.flashes, "c": p.cues, "m": p.music, "d": p.music_drop, "o": p.music_outro, "vo": p.voiceover, "a": p.audio, "ov": ovs, "files": files, "e": p.music_energy}).to_string())
 }
 
 pub fn run(p: &Plan, ev: &Events) -> Result<()> {
@@ -320,6 +320,16 @@ pub fn run(p: &Plan, ev: &Events) -> Result<()> {
         let x = media::decode_audio(Path::new(f), &tmp, p.music.start, Some(total)).with_context(|| format!("music file {f}"))?;
         let pk = peak(&x).max(1e-9);
         add_at(&mut mix, &x, 0.0, 0.5 / pk * db(p.music.gain_db));
+    }
+    if p.music.kind == MusicKind::Soundfont {
+        let bed = crate::soundfont::render(p).context("rendering soundfont bed")?;
+        for ch in 0..2 {
+            for i in 0..sc.n {
+                if i < bed[ch].len() {
+                    mix[ch][i] += bed[ch][i];
+                }
+            }
+        }
     }
     // the bed rings out over the last `fade_out` seconds
     let fo = p.music.fade_out.max(1e-3);

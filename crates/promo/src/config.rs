@@ -514,6 +514,21 @@ pub enum MusicKind {
     File,
     /// no music (voice-over / sfx only)
     None,
+    /// a SoundFont (SF2) sampled bed
+    Soundfont,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum SoundfontStyle {
+    /// acoustic piano + nylon guitar + upright bass + brush kit
+    #[default]
+    Acoustic,
+    /// strings + french horn + timpani
+    Cinematic,
+    /// rhodes + clean electric guitar + finger bass + standard drums
+    Funk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -603,6 +618,12 @@ pub struct MusicCfg {
     /// fade-out at the end (s)
     #[serde(default = "d_fade")]
     pub fade_out: f64,
+    /// `kind = "soundfont"`: path to a local SF2 (SoundFont) bank
+    #[serde(default)]
+    pub soundfont: Option<String>,
+    /// `kind = "soundfont"`: instrument palette
+    #[serde(default)]
+    pub soundfont_style: Option<SoundfontStyle>,
 }
 fn d_seed() -> u64 {
     4
@@ -740,7 +761,7 @@ pub struct PromoFile {
 }
 
 /// keys whose values are paths: made absolute against the file that declares them, so `extends` works across folders
-const PATH_KEYS: &[(&str, &str)] = &[("paths", "clips"), ("paths", "motion"), ("paths", "out"), ("paths", "build"), ("captions", "font"), ("captions", "script"), ("music", "file"), ("voiceover", "file"), ("voiceover", "script")];
+const PATH_KEYS: &[(&str, &str)] = &[("paths", "clips"), ("paths", "motion"), ("paths", "out"), ("paths", "build"), ("captions", "font"), ("captions", "script"), ("music", "file"), ("music", "soundfont"), ("voiceover", "file"), ("voiceover", "script")];
 
 fn read_value(path: &Path) -> Result<toml::Value, ConfigError> {
     let txt = std::fs::read_to_string(path).map_err(|e| ConfigError(format!("reading {}: {e}", path.display())))?;

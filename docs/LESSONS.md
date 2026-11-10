@@ -235,3 +235,10 @@ panicking pipeline safe to retry beyond releasing the job slot, and the panic pa
 The directed procedural bed takes its mood from an explicit host choice (`direction`); there is no automatic content
 analysis of the clips or copy. QA reports objective targets (duration, loudness, true peak, motion, caption size) and
 never judges taste.
+
+### Sampled SoundFont audition (2026-11-10)
+
+Owner feedback: the first procedural moods still sounded like the same cheap synth. A 6 s audition now exists using
+FluidR3 GM sampled instruments, but taste approval is still pending; do not describe the sampled bed as approved
+studio quality or as our own recordings. The integration stays reversible: `music.kind = "soundfont"` is optional,
+requires a user-supplied local SF2, and falls back to nothing (render fails) when the bank is missing or invalid.

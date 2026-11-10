@@ -21,7 +21,7 @@ with the word-by-word pop.
 | Cuts | beat `flash = true` or `[video] flashes` | white flash (`look.flash_opacity`, `flash_dur`) + whoosh and hit (`music.flash_hits`) |
 | End card | `[end_card]` | the clip stays sharp for `sharp` s, then blurs (`blur`) behind the full-frame `asset` |
 | Captions | `[captions]` | off by default; font file (any TTF/OTF, metrics read from it; default Pixelify Sans Bold, OFL), `size`, `max_w` (long words shrink), `y`, `fill`, `outline`, `outline_w`, `shadow`, pop scale/duration/blur, `uppercase`; timing from the beats, `words`, a timed `script` or the voice-over script |
-| Music | `[music]` | `kind = "procedural"` (bpm, seed, chord `progression`, `drop`, `outro`), `"file"` (`file`, `gain_db`, `start`) or `"none"`; `fade_out` |
+| Music | `[music]` | `kind = "procedural"` (bpm, seed, chord `progression`, `drop`, `outro`), `"file"` (`file`, `gain_db`, `start`), `"soundfont"` (`soundfont` local SF2 path, `soundfont_style` = `acoustic`/`cinematic`/`funk`) or `"none"`; `fade_out` |
 | Cues | beat `cue` or `[[cue]]` | `braam`, `hit`, `whoosh` at a time with a gain |
 | Voice-over | `[voiceover]` | `file`, `gain_db`, `offset`, `duck_db` (music ducks under the voice), `script` (timed captions aligned to the voice) |
 | Loudness | `[audio]` | `lufs = -14`, `lufs_tolerance`, `ceiling_db` (limiter), `true_peak_max` (QA) |
@@ -35,7 +35,7 @@ per-scene energy envelope. The host (or the person writing the brief) chooses th
 content analysis. Optional `key` is a MIDI root note (integer, 36..=72, default mood key) - not a key name - and
 `bpm` (default mood bpm, 1..=300); `progression` is auto-generated unless you set it explicitly. `key` is ignored
 (and rejected) when `progression` is set explicitly - supply one or the other. `direction` (and `key`/`bpm`) only apply
-when `kind = "procedural"`; with `kind = "file"` or `"none"` they are rejected. Per beat/end card,
+when `kind = "procedural"` or `"soundfont"`; with `kind = "file"` or `"none"` they are rejected. Per beat/end card,
 set `energy = 0.2` (aliases `music_energy`, `intensity`, `level`) to change density and loudness:
 
 ```toml
@@ -56,11 +56,37 @@ clips = ["b@0"]
 energy = 0.4
 ```
 
-Energy without `direction` is ignored (the legacy bed has no per-scene envelope). The envelope is an event-level
+Energy without `direction` is ignored for the legacy procedural bed (sampled beds always apply energy). The envelope is an event-level
 exponential smoothed over sixteenth-note steps (beat/4) (about 350 ms for a new note gain to ramp in); already-triggered tails
 continue and `energy = 0` lowers density and loudness but is not silence.
 
 Omitting `direction` keeps the legacy procedural bed byte-identical.
+
+### Sampled SoundFont music
+
+Set `[music] kind = "soundfont"` with a local SF2 bank (`soundfont = "/path/to/bank.sf2"`) and a palette
+(`soundfont_style = "acoustic" | "cinematic" | "funk"`). The bank is never bundled and never downloaded by the tool:
+obtain a GM bank such as FluidR3 (MIT, see below) and pass its path. Missing or invalid banks fail the render;
+there is no fallback to the procedural synth.
+
+`direction`, `key`, `bpm`, `progression` and per-beat `energy` are reused for the sampled bed (they are compositional
+controls, not timbre); `soundfont`/`soundfont_style` are rejected on other kinds. `gain_db` applies only to
+`kind = "file"`.
+
+Recommended source: FluidR3 GM SoundFont, MIT licensed, from
+https://github.com/pianobooster/fluid-soundfont/releases/tag/v3.1 (file `FluidR3_GM.sf2`, SHA-256
+`74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0`). Renderer: rustysynth 1.3.8 (MIT,
+https://github.com/sinshu/rustysynth). Keep the bank's `COPYING`/README notices with the file. The samples are not
+recordings made by us and are not studio-approved masters.
+
+```toml
+[music]
+kind = "soundfont"
+soundfont = "/path/to/FluidR3_GM.sf2"
+soundfont_style = "cinematic"
+direction = "tense"
+key = 44
+```
 
 ## Make a new video from texts + clips
 

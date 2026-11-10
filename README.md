@@ -30,8 +30,9 @@ Burned-in captions are off by default.
 | `system_info(encoder?)` | the GPU / encoder backend this machine renders with, every probe tried and why it was chosen |
 
 Finite choices are enums in the tool schemas: `aspect` = `9:16` · `16:9` · `1:1`, `music` = `procedural` · `file` ·
-`none`, `resolution` = `preview` · `draft` · `final`, `encoder` = `auto` · `nvenc` · `amf` · `qsv` · `vaapi` · `videotoolbox` ·
-`x264`,
+`soundfont` · `none`, `resolution` = `preview` · `draft` · `final`, `encoder` = `auto` · `nvenc` · `amf` · `qsv` · `vaapi` ·
+`videotoolbox` · `x264`. For sampled music see docs/PROMO_VIDEOS.md#sampled-soundfont-music; the SoundFont bank is user-supplied
+(e.g. FluidR3 GM, MIT) and is never bundled.
 `cue` = `braam` · `hit` · `whoosh`, `animation` = `fade_scale` · `slide_up` · `pop` · `draw_on` · `spin` · `glow`,
 `easing` = `ease_out` · `ease_in_out` · `back` · `spring`, `fps` = `30` · `60`, `width` = `540` · `720` · `1080` ·
 `1440`, `codec` = `qtrle` · `prores4444`.

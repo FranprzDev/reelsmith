@@ -1967,6 +1967,7 @@ dependencies = [
  "fframes",
  "fs2",
  "png 0.17.16",
+ "rustysynth",
  "schemars",
  "serde",
  "serde_json",
@@ -2512,6 +2513,12 @@ dependencies = [
  "unicode-properties",
  "unicode-script",
 ]
+
+[[package]]
+name = "rustysynth"
+version = "1.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4bcfea87b1b7f7a4c3eecc18934a88943b0cd3c16b69965aed94ffa4868954"
 
 [[package]]
 name = "schemars"

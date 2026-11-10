@@ -32,6 +32,7 @@ pub mod progress;
 pub mod qa;
 pub mod render;
 pub mod script;
+pub mod soundfont;
 pub mod telemetry;
 
 pub use config::{Aspect, Engine, Res};
