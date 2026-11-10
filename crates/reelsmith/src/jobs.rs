@@ -82,7 +82,13 @@ impl Jobs {
         let inner = self.inner.clone();
         let job_id = id.clone();
         tokio::task::spawn_blocking(move || {
-            let outcome = pipeline::build(&config, &opts, &Events::new(false)).map_err(|e| format!("{e:#}"));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pipeline::build(&config, &opts, &Events::new(false)).map_err(|e| format!("{e:#}"))
+            }));
+            let outcome = match outcome {
+                Ok(r) => r,
+                Err(_) => Err("render pipeline panicked".to_string()),
+            };
             if let Ok(mut jobs) = inner.lock() {
                 if let Some(j) = jobs.get_mut(&job_id) {
                     j.finished = Some(j.started.elapsed());

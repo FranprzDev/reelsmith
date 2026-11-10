@@ -388,6 +388,9 @@ impl Plan {
         if self.music.kind == MusicKind::File && self.music.file.is_none() {
             return Err(cerr("music.kind = \"file\" needs music.file".into()));
         }
+        if self.music.kind == MusicKind::Procedural && self.music.progression.is_empty() {
+            return Err(cerr("music.kind = \"procedural\" needs a non-empty music.progression".into()));
+        }
         Ok(())
     }
 

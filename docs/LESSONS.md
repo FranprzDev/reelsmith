@@ -214,3 +214,18 @@ The optional hint filter now matches extensions exactly. This is conservative on
 some otherwise usable uppercase-extension hints are omitted there. Exact filenames still work; resolution itself
 is unchanged. Verified with real MCP calls for the uppercase case and normal `nebulaa` / `badg` typos, plus a
 fresh 360p smoke render. Do not treat a rendered smoke clip as proof that every hint edge case works.
+
+### Empty procedural progression and panicked render jobs (2026-11-10)
+
+Repro: MCP config with `music.kind = "procedural"` and `music.progression = []` passed Plan validation, then
+`audio::procedural_bed` indexed `prog[bar_i % prog.len()]` with a zero-length `prog` and panicked. The panic
+unwound through `tokio::task::spawn_blocking`, so the job's `outcome` stayed `None` forever and every later render
+was rejected as busy.
+
+Fix: Plan validation now rejects an empty progression only when `music.kind = "procedural"` (domain check, before
+rendering). Render jobs wrap `pipeline::build` in `std::panic::catch_unwind(AssertUnwindSafe(...))` and record a
+generic `"render pipeline panicked"` failure, so the single-job slot is released and later renders can proceed.
+
+Limits: `catch_unwind` only catches unwinding panics. A binary built with `panic = "abort"` (or an aborting panic)
+cannot be caught; the MCP server relies on the default `panic = "unwind"` build. The catch also does not make a
+panicking pipeline safe to retry beyond releasing the job slot, and the panic payload is deliberately not exposed.
