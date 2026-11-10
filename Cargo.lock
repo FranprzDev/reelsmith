@@ -586,7 +586,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "datavid"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "ebur128",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "promo"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "datavid",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "reelsmith"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "datavid",
