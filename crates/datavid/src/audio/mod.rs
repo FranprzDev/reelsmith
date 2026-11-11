@@ -102,8 +102,14 @@ impl Score {
     pub fn mixdown(&self, ir: &[Vec<f64>; 2]) -> [Vec<f64>; 2] {
         let mut out = [vec![], vec![]];
         for ch in 0..2 {
-            let w = dsp::fftconvolve(&self.wet[ch], &ir[ch]);
-            let mut m: Vec<f64> = self.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+        let mut m: Vec<f64> = if self.wet[ch].iter().all(|v| *v == 0.0)
+            && ir[ch].iter().all(|v| v.abs() <= 1.0)
+        {
+            self.dry[ch].iter().take(self.wet[ch].len()).map(|d| d + 0.0).collect()
+        } else {
+                let w = dsp::fftconvolve(&self.wet[ch], &ir[ch]);
+                self.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect()
+            };
             dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), self.sr), &mut m);
             out[ch] = m;
         }
@@ -142,4 +148,130 @@ pub fn read_wav(path: &std::path::Path) -> anyhow::Result<(usize, [Vec<f64>; 2])
     let l: Vec<f64> = (0..n).map(|i| s[i * ch]).collect();
     let rr: Vec<f64> = (0..n).map(|i| s[i * ch + (ch > 1) as usize]).collect();
     Ok((sp.sample_rate as usize, [l, rr]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bits_eq(a: &[f64], b: &[f64]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "index {i}: {x:?} vs {y:?}");
+        }
+    }
+
+    #[test]
+    fn mixdown_zero_wet_matches_reference_bits() {
+        for wet_val in [0.0f64, -0.0f64] {
+            for ir in [
+                vec![0.1f64, -0.2, 0.05],
+                vec![],
+                vec![f64::NAN, 1.0],
+            ] {
+                let n = 32usize;
+                let sr = 48000usize;
+                let dry = [vec![0.123456789f64; n], vec![-0.5f64; n]];
+                let wet = [vec![wet_val; n], vec![wet_val; n]];
+                let sc = Score { sr: sr as f64, n, dry: dry.clone(), wet, rng: Pcg64::seed_from_u64(1) };
+                let irs = [ir.clone(), ir.clone()];
+                let got = sc.mixdown(&irs);
+                // reference (pre-fast-path) implementation
+                let mut want = [vec![], vec![]];
+                for ch in 0..2 {
+                    let w = dsp::fftconvolve(&sc.wet[ch], &irs[ch]);
+                    let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+                    dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+                    want[ch] = m;
+                }
+                for ch in 0..2 {
+                    bits_eq(&got[ch], &want[ch]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixdown_nonzero_wet_matches_reference_bits() {
+        let n = 32usize;
+        let sr = 48000usize;
+        let dry = [vec![0.123456789f64; n], vec![-0.5f64; n]];
+        let wet = [vec![0.25f64; n], vec![-0.1f64; n]];
+        let sc = Score { sr: sr as f64, n, dry: dry.clone(), wet, rng: Pcg64::seed_from_u64(1) };
+        let ir = [vec![0.1f64, -0.2, 0.05], vec![0.2, 0.0, -0.1]];
+        let got = sc.mixdown(&ir);
+        let mut want = [vec![], vec![]];
+        for ch in 0..2 {
+            let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+            let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+            dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+            want[ch] = m;
+        }
+        for ch in 0..2 {
+            bits_eq(&got[ch], &want[ch]);
+        }
+    }
+
+    #[test]
+    fn mixdown_zero_wet_edge_cases() {
+        // dry with negative zero and positive zero
+        for dry_val in [-0.0f64, 0.0f64] {
+            let n = 16usize;
+            let sr = 48000usize;
+            let dry = [vec![dry_val; n], vec![dry_val; n]];
+            let wet = [vec![0.0f64; n], vec![0.0f64; n]];
+            let sc = Score { sr: sr as f64, n, dry: dry.clone(), wet, rng: Pcg64::seed_from_u64(1) };
+            let ir = [vec![0.25f64, -0.1, 0.0], vec![0.0, 0.5, -0.25]];
+            let got = sc.mixdown(&ir);
+            let mut want = [vec![], vec![]];
+            for ch in 0..2 {
+                let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+                let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+                dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+                want[ch] = m;
+            }
+            for ch in 0..2 {
+                bits_eq(&got[ch], &want[ch]);
+            }
+        }
+        // wet length different and empty
+        for (dry_n, wet_n) in [(16usize, 8usize), (8usize, 16usize), (16usize, 0usize)] {
+            let sr = 48000usize;
+            let dry = [vec![0.123456789f64; dry_n], vec![-0.5f64; dry_n]];
+            let wet = [vec![0.0f64; wet_n], vec![0.0f64; wet_n]];
+            let sc = Score { sr: sr as f64, n: dry_n, dry: dry.clone(), wet, rng: Pcg64::seed_from_u64(1) };
+            let ir = [vec![0.1f64, -0.2, 0.05], vec![0.2, 0.0, -0.1]];
+            let got = sc.mixdown(&ir);
+            let mut want = [vec![], vec![]];
+            for ch in 0..2 {
+                let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+                let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+                dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+                want[ch] = m;
+            }
+            for ch in 0..2 {
+                bits_eq(&got[ch], &want[ch]);
+            }
+        }
+        // huge finite IR falls back to convolution path
+        {
+            let n = 16usize;
+            let sr = 48000usize;
+            let dry = [vec![0.1f64; n], vec![-0.2f64; n]];
+            let wet = [vec![0.0f64; n], vec![0.0f64; n]];
+            let sc = Score { sr: sr as f64, n, dry: dry.clone(), wet, rng: Pcg64::seed_from_u64(1) };
+            let ir = [vec![f64::MAX, 1e308], vec![f64::MAX]];
+            let got = sc.mixdown(&ir);
+            let mut want = [vec![], vec![]];
+            for ch in 0..2 {
+                let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+                let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+                dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+                want[ch] = m;
+            }
+            for ch in 0..2 {
+                bits_eq(&got[ch], &want[ch]);
+            }
+        }
+    }
 }
