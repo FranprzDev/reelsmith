@@ -274,4 +274,96 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn mixdown_signedzero_dry_negativezero_wet_matches_reference_bits() {
+        for dry_val in [-0.0f64, 0.0f64] {
+            let n = 16usize;
+            let sr = 48000usize;
+            let dry = [vec![dry_val; n], vec![dry_val; n]];
+            let wet = [vec![-0.0f64; n], vec![-0.0f64; n]];
+            let sc = Score { sr: sr as f64, n, dry: dry.clone(), wet, rng: Pcg64::seed_from_u64(1) };
+            let ir = [vec![0.25f64, -0.1, 0.0], vec![0.0, 0.5, -0.25]];
+            let got = sc.mixdown(&ir);
+            let mut want = [vec![], vec![]];
+            for ch in 0..2 {
+                let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+                let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+                dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+                want[ch] = m;
+            }
+            for ch in 0..2 {
+                bits_eq(&got[ch], &want[ch]);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_zero_wet_mixdown_vs_old_fft_reference() {
+        use std::hint::black_box;
+        use std::time::{Duration, Instant};
+
+        let sr = 48000usize;
+        let seconds = 6.0;
+        let n = (seconds * sr as f64) as usize;
+        let mut sc = Score::new(sr, seconds, 7);
+        for ch in 0..2 {
+            for i in 0..n {
+                let t = i as f64 / sr as f64;
+                sc.dry[ch][i] = (2.0 * std::f64::consts::PI * 220.0 * t).sin();
+            }
+            sc.wet[ch] = vec![0.0; n];
+        }
+        let ir = sc.impulse(2.2);
+
+        let mut want = [vec![], vec![]];
+        for ch in 0..2 {
+            let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+            let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+            dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+            want[ch] = m;
+        }
+        let got = sc.mixdown(&ir);
+        for ch in 0..2 {
+            bits_eq(&got[ch], &want[ch]);
+        }
+
+        let mut old_times = [Duration::ZERO; 5];
+        for slot in &mut old_times {
+            let t0 = Instant::now();
+            let mut r = [vec![], vec![]];
+            for ch in 0..2 {
+                let w = dsp::fftconvolve(&sc.wet[ch], &ir[ch]);
+                let mut m: Vec<f64> = sc.dry[ch].iter().zip(w.iter()).map(|(d, w)| d + 0.55 * w).collect();
+                dsp::sosfilt(&dsp::butter(2, dsp::Kind::High(25.0), sc.sr), &mut m);
+                r[ch] = m;
+            }
+            black_box(&r);
+            *slot = t0.elapsed();
+        }
+
+        let mut new_times = [Duration::ZERO; 5];
+        for slot in &mut new_times {
+            let t0 = Instant::now();
+            let r = black_box(sc.mixdown(&ir));
+            *slot = t0.elapsed();
+            black_box(&r);
+        }
+
+        old_times.sort();
+        new_times.sort();
+        eprintln!("mixdown zero wet 6s: old_fft_median {:?}, fast_median {:?}", old_times[2], new_times[2]);
+
+        let mut imp_times = [Duration::ZERO; 5];
+        for slot in &mut imp_times {
+            let mut sc2 = Score::new(sr, seconds, 7);
+            let t0 = Instant::now();
+            let r = black_box(sc2.impulse(2.2));
+            *slot = t0.elapsed();
+            black_box(&r);
+        }
+        imp_times.sort();
+        eprintln!("impulse 2.2 median {:?}", imp_times[2]);
+    }
 }
