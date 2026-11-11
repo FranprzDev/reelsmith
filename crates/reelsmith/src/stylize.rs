@@ -183,32 +183,25 @@ fn ascii_frame(src: &[u8], w: usize, h: usize, cell: usize, masks: &[Vec<u8>], c
             let n = (cell * cell) as u64;
             let (r, g, b) = ((r / n) as u8, (g / n) as u8, (b / n) as u8);
             let (fr, fg, fb) = if color { (r, g, b) } else { (255, 255, 255) };
+            let lum = ((0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0).powf(0.7);
+            let gi = (lum * (masks.len() - 1) as f64).round() as usize;
+            let mask = if gi == 0 { None } else { Some(&masks[gi]) };
             for y in 0..cell {
                 for x in 0..cell {
                     let i = ((cy * cell + y) * w + cx * cell + x) * 4;
                     out[i] = fr / 5;
                     out[i + 1] = fg / 5;
                     out[i + 2] = fb / 5;
-                }
-            }
-            let lum = ((0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0).powf(0.7);
-            let gi = (lum * (masks.len() - 1) as f64).round() as usize;
-            if gi == 0 {
-                continue;
-            }
-            let mask = &masks[gi];
-            for y in 0..cell {
-                for x in 0..cell {
-                    let a = mask[y * cell + x] as u32;
-                    if a == 0 {
-                        continue;
+                    if let Some(mask) = mask {
+                        let a = mask[y * cell + x] as u32;
+                        if a != 0 {
+                            let inv = 255 - a;
+                            out[i] = ((fr as u32 * a + out[i] as u32 * inv) / 255) as u8;
+                            out[i + 1] = ((fg as u32 * a + out[i + 1] as u32 * inv) / 255) as u8;
+                            out[i + 2] = ((fb as u32 * a + out[i + 2] as u32 * inv) / 255) as u8;
+                            out[i + 3] = 255;
+                        }
                     }
-                    let i = ((cy * cell + y) * w + cx * cell + x) * 4;
-                    let inv = 255 - a;
-                    out[i] = ((fr as u32 * a + out[i] as u32 * inv) / 255) as u8;
-                    out[i + 1] = ((fg as u32 * a + out[i + 1] as u32 * inv) / 255) as u8;
-                    out[i + 2] = ((fb as u32 * a + out[i + 2] as u32 * inv) / 255) as u8;
-                    out[i + 3] = 255;
                 }
             }
         }
@@ -417,7 +410,7 @@ mod tests {
                 let (r, g, b) = ((r / n) as f64, (g / n) as f64, (b / n) as f64);
                 for y in by * block..((by + 1) * block).min(h) {
                     for x in bx * block..((bx + 1) * block).min(w) {
-                        let t = (BAYER8[y % 8][x % 8] as f64 + 0.5) / 64.0 * 255.0;
+                        let t = BAYER64[y % 8][x % 8];
                         let i = (y * w + x) * 4;
                         if color {
                             out[i] = if r > t { 255 } else { 0 };
@@ -429,6 +422,58 @@ mod tests {
                             out[i + 1] = v;
                             out[i + 2] = v;
                         }
+                        out[i + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    fn reference_ascii_frame(src: &[u8], w: usize, h: usize, cell: usize, masks: &[Vec<u8>], color: bool, out: &mut Vec<u8>) {
+        out.clear();
+        out.resize(w * h * 4, 0);
+        for px in out.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        for cy in 0..h / cell {
+            for cx in 0..w / cell {
+                let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
+                for y in cy * cell..(cy + 1) * cell {
+                    for x in cx * cell..(cx + 1) * cell {
+                        let i = (y * w + x) * 4;
+                        r += src[i] as u64;
+                        g += src[i + 1] as u64;
+                        b += src[i + 2] as u64;
+                    }
+                }
+                let n = (cell * cell) as u64;
+                let (r, g, b) = ((r / n) as u8, (g / n) as u8, (b / n) as u8);
+                let (fr, fg, fb) = if color { (r, g, b) } else { (255, 255, 255) };
+                for y in 0..cell {
+                    for x in 0..cell {
+                        let i = ((cy * cell + y) * w + cx * cell + x) * 4;
+                        out[i] = fr / 5;
+                        out[i + 1] = fg / 5;
+                        out[i + 2] = fb / 5;
+                    }
+                }
+                let lum = ((0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0).powf(0.7);
+                let gi = (lum * (masks.len() - 1) as f64).round() as usize;
+                if gi == 0 {
+                    continue;
+                }
+                let mask = &masks[gi];
+                for y in 0..cell {
+                    for x in 0..cell {
+                        let a = mask[y * cell + x] as u32;
+                        if a == 0 {
+                            continue;
+                        }
+                        let i = ((cy * cell + y) * w + cx * cell + x) * 4;
+                        let inv = 255 - a;
+                        out[i] = ((fr as u32 * a + out[i] as u32 * inv) / 255) as u8;
+                        out[i + 1] = ((fg as u32 * a + out[i + 1] as u32 * inv) / 255) as u8;
+                        out[i + 2] = ((fb as u32 * a + out[i + 2] as u32 * inv) / 255) as u8;
                         out[i + 3] = 255;
                     }
                 }
@@ -453,6 +498,39 @@ mod tests {
     }
 
     #[test]
+    fn ascii_matches_reference() {
+        for (w, h, cell, color) in [
+            (10usize, 12usize, 4usize, true),
+            (7, 9, 10, false),
+            (16, 16, 16, true),
+            (5, 5, 4, false),
+            (1, 1, 4, true),
+            (13, 17, 10, false),
+            (23, 29, 4, true),
+            (360, 640, 10, false),
+            (11, 13, 16, true),
+        ] {
+            let mut src = vec![0u8; w * h * 4];
+            for i in 0..src.len() {
+                src[i] = (i as u8).wrapping_mul(37).wrapping_add(13);
+            }
+            let mut masks = Vec::new();
+            for mi in 0..10usize {
+                let mut m = vec![0u8; cell * cell];
+                for j in 0..m.len() {
+                    m[j] = ((mi * 97 + j * 131 + 7) % 256) as u8;
+                }
+                masks.push(m);
+            }
+            let mut out = Vec::new();
+            ascii_frame(&src, w, h, cell, &masks, color, &mut out);
+            let mut expected = Vec::new();
+            reference_ascii_frame(&src, w, h, cell, &masks, color, &mut expected);
+            assert_eq!(out, expected, "mismatch w={w} h={h} cell={cell} color={color}");
+        }
+    }
+
+    #[test]
     #[ignore]
     fn bench_dither_360x640_30frames() {
         let w = 360usize;
@@ -460,22 +538,40 @@ mod tests {
         let src = vec![128u8; w * h * 4];
         let mut old_samples = Vec::new();
         let mut new_samples = Vec::new();
-        for _ in 0..5 {
-            let start = std::time::Instant::now();
-            for _ in 0..30 {
-                let mut out = Vec::new();
-                reference_dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
-                std::hint::black_box(&out);
-            }
-            old_samples.push(start.elapsed());
+        for i in 0..5 {
+            if i % 2 == 0 {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    reference_dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                old_samples.push(start.elapsed());
 
-            let start = std::time::Instant::now();
-            for _ in 0..30 {
-                let mut out = Vec::new();
-                dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
-                std::hint::black_box(&out);
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                new_samples.push(start.elapsed());
+            } else {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                new_samples.push(start.elapsed());
+
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    reference_dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                old_samples.push(start.elapsed());
             }
-            new_samples.push(start.elapsed());
         }
         old_samples.sort();
         new_samples.sort();
@@ -483,5 +579,122 @@ mod tests {
         let new_median = new_samples[2];
         println!("old median (reference): {:?}", old_median);
         println!("new median (dither_frame): {:?}", new_median);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_dither_540x960_30frames() {
+        let w = 540usize;
+        let h = 960usize;
+        let mut src = vec![0u8; w * h * 4];
+        for i in 0..src.len() {
+            src[i] = (i as u8).wrapping_mul(37).wrapping_add(13);
+        }
+        let mut old_samples = Vec::new();
+        let mut new_samples = Vec::new();
+        for i in 0..5 {
+            if i % 2 == 0 {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    reference_dither_frame(std::hint::black_box(&src), w, h, 4, false, &mut out);
+                    std::hint::black_box(&out);
+                }
+                old_samples.push(start.elapsed());
+
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    dither_frame(std::hint::black_box(&src), w, h, 4, false, &mut out);
+                    std::hint::black_box(&out);
+                }
+                new_samples.push(start.elapsed());
+            } else {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    dither_frame(std::hint::black_box(&src), w, h, 4, false, &mut out);
+                    std::hint::black_box(&out);
+                }
+                new_samples.push(start.elapsed());
+
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    reference_dither_frame(std::hint::black_box(&src), w, h, 4, false, &mut out);
+                    std::hint::black_box(&out);
+                }
+                old_samples.push(start.elapsed());
+            }
+        }
+        old_samples.sort();
+        new_samples.sort();
+        let old_median = old_samples[2];
+        let new_median = new_samples[2];
+        println!("old median (reference): {:?}", old_median);
+        println!("new median (dither_frame): {:?}", new_median);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_ascii_540x960_30frames() {
+        let w = 540usize;
+        let h = 960usize;
+        let cell = 10usize;
+        let mut src = vec![0u8; w * h * 4];
+        for i in 0..src.len() {
+            src[i] = (i as u8).wrapping_mul(37).wrapping_add(13);
+        }
+        let mut masks = Vec::new();
+        for mi in 0..10usize {
+            let mut m = vec![0u8; cell * cell];
+            for j in 0..m.len() {
+                m[j] = ((mi * 97 + j * 131 + 7) % 256) as u8;
+            }
+            masks.push(m);
+        }
+        let mut old_samples = Vec::new();
+        let mut new_samples = Vec::new();
+        for i in 0..5 {
+            if i % 2 == 0 {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    reference_ascii_frame(std::hint::black_box(&src), w, h, cell, std::hint::black_box(&masks), true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                old_samples.push(start.elapsed());
+
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    ascii_frame(std::hint::black_box(&src), w, h, cell, std::hint::black_box(&masks), true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                new_samples.push(start.elapsed());
+            } else {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    ascii_frame(std::hint::black_box(&src), w, h, cell, std::hint::black_box(&masks), true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                new_samples.push(start.elapsed());
+
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let mut out = Vec::new();
+                    reference_ascii_frame(std::hint::black_box(&src), w, h, cell, std::hint::black_box(&masks), true, &mut out);
+                    std::hint::black_box(&out);
+                }
+                old_samples.push(start.elapsed());
+            }
+        }
+        old_samples.sort();
+        new_samples.sort();
+        let old_median = old_samples[2];
+        let new_median = new_samples[2];
+        println!("old median (reference): {:?}", old_median);
+        println!("new median (ascii_frame): {:?}", new_median);
     }
 }
