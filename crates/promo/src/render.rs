@@ -268,6 +268,16 @@ fn mux_key(p: &Plan, work: &Path, rs: &[(usize, usize)], out: &Path) -> Result<S
 /// Join the rendered chunks and mux the mastered audio into `out`. Skips (returns false) when the parts, the mix
 /// and the destination are unchanged since the last mux AND the output file is still exactly what that mux wrote -
 /// so an externally edited or replaced output is always re-muxed, never kept by mistake.
+static MUX_TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn mux_tmp_path(out: &Path) -> PathBuf {
+    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    let name = out.file_name().and_then(|n| n.to_str()).unwrap_or("out.mp4");
+    let pid = std::process::id();
+    let counter = MUX_TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    parent.join(format!("{name}.{pid}.{counter}.tmp.mp4"))
+}
+
 pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<bool> {
     let work = chunks_dir(p, r);
     let ranges = ranges(p, chunk_frames);
@@ -289,7 +299,11 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
     }
     std::fs::write(work.join("parts.txt"), list)?;
     anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
-    let tmp = std::env::temp_dir().join(format!("promo_{}_{}.mp4", p.name, std::process::id()));
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = mux_tmp_path(out);
+    let _ = std::fs::remove_file(&tmp);
     let mut args: Vec<String> = ["-f", "concat", "-safe", "0", "-i"].map(String::from).to_vec();
     args.extend([
         work.join("parts.txt").display().to_string(),
@@ -311,12 +325,14 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
         "+faststart".into(),
         tmp.display().to_string(),
     ]);
-    datavid::media::ffmpeg(&args, "the video stream-copy / audio mux")?;
-    if let Some(d) = out.parent() {
-        std::fs::create_dir_all(d)?;
+    if let Err(e) = datavid::media::ffmpeg(&args, "the video stream-copy / audio mux") {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    std::fs::copy(&tmp, out).with_context(|| format!("copying the MP4 to {}", out.display()))?;
-    let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = std::fs::rename(&tmp, out) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     std::fs::write(&key_file, format!("{key}\n{}", crate::plan::file_fingerprint(out)))?;
     Ok(true)
 }
@@ -453,5 +469,40 @@ end = 1.2
         black_box(new);
 
         eprintln!("old concat+hash: {old_t:?}; streaming: {new_t:?}");
+    }
+
+    #[test]
+    fn mux_tmp_path_parent_matches_out() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let tmp = mux_tmp_path(out);
+        assert_eq!(tmp.parent(), out.parent());
+    }
+
+    #[test]
+    fn mux_tmp_path_unique_across_calls() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let a = mux_tmp_path(out);
+        let b = mux_tmp_path(out);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mux_tmp_path_extension_is_tmp_mp4() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let tmp = mux_tmp_path(out);
+        assert!(tmp.to_string_lossy().ends_with(".tmp.mp4"));
+    }
+
+    #[test]
+    fn atomic_rename_preserves_old_on_failure() {
+        let dir = std::env::temp_dir().join(format!("muxtmp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.mp4");
+        std::fs::write(&out, b"original").unwrap();
+        let missing = dir.join("does-not-exist.tmp.mp4");
+        let res = std::fs::rename(&missing, &out);
+        assert!(res.is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
