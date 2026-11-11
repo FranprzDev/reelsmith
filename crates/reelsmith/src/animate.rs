@@ -696,57 +696,60 @@ pub fn animate(a: &AnimateSvgArgs) -> Result<AnimatedSvg> {
     let mut write_err = None;
 
     for f in 0..frames {
-        let t = f as f64 / fps as f64;
-        // which phase, its animation, raw progress u and eased progress k
-        let (anim, u, k) = if f < n_in {
-            let u = (f as f64 + 1.0) / n_in as f64;
-            (a.animation, u, a.easing.at(u))
-        } else if f < n_in + n_hold || a.exit.is_none() {
-            (a.animation, 1.0, 1.0)
-        } else {
-            // the exit is its entrance backwards; its last frame is fully out
-            let u = 1.0 - (f - n_in - n_hold + 1) as f64 / n_out as f64;
-            (a.exit.unwrap_or(a.animation), u, a.easing.at(u))
-        };
-        let mut p = pose(anim, k, u, lay.slide);
-        if anim == Animation::Glow && f >= n_in {
-            // the hold pulse: one slow breath every 1.6 s, phase 0 where the entrance landed
-            let ph = (t - dur) / 1.6 * std::f64::consts::TAU;
-            let breath = 0.5 - 0.5 * ph.cos();
-            p.glow = (0.35 + 0.3 * breath) * ease::clamp(k);
-            p.scale *= 1.0 + 0.02 * breath;
-        }
-        canvas.fill(tiny_skia::Color::TRANSPARENT);
-        match (p.draw, &draw_on) {
-            (Some(u), Some(d)) => {
-                let svg = d.frame_svg(u, a.easing);
-                let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the dashed SVG: {e}"))?;
-                let s = t2.size();
-                let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
-                    .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
-                resvg::render(&t2, tf, &mut canvas.as_mut());
+        let reusable_hold = f > n_in && f < n_in + n_hold && a.animation != Animation::Glow;
+        if !reusable_hold {
+            let t = f as f64 / fps as f64;
+            // which phase, its animation, raw progress u and eased progress k
+            let (anim, u, k) = if f < n_in {
+                let u = (f as f64 + 1.0) / n_in as f64;
+                (a.animation, u, a.easing.at(u))
+            } else if f < n_in + n_hold || a.exit.is_none() {
+                (a.animation, 1.0, 1.0)
+            } else {
+                // the exit is its entrance backwards; its last frame is fully out
+                let u = 1.0 - (f - n_in - n_hold + 1) as f64 / n_out as f64;
+                (a.exit.unwrap_or(a.animation), u, a.easing.at(u))
+            };
+            let mut p = pose(anim, k, u, lay.slide);
+            if anim == Animation::Glow && f >= n_in {
+                // the hold pulse: one slow breath every 1.6 s, phase 0 where the entrance landed
+                let ph = (t - dur) / 1.6 * std::f64::consts::TAU;
+                let breath = 0.5 - 0.5 * ph.cos();
+                p.glow = (0.35 + 0.3 * breath) * ease::clamp(k);
+                p.scale *= 1.0 + 0.02 * breath;
             }
-            _ => {
-                let place = |w: f64, h: f64| {
-                    // map the raster (w x h at OVER) to the art box, scaled and rotated about the canvas centre
-                    let s = p.scale / OVER;
-                    Transform::from_translate(-(w / 2.0) as f32, -(h / 2.0) as f32)
-                        .post_scale(s as f32, s as f32)
-                        .post_rotate(p.rotate_deg as f32)
-                        .post_translate(cx as f32, (cy + p.dy) as f32)
-                };
-                if let (Some(g), true) = (&glow, p.glow > 0.001) {
-                    let paint = PixmapPaint { opacity: (p.glow.min(1.0) * p.opacity) as f32, blend_mode: BlendMode::Plus, quality: FilterQuality::Bicubic };
-                    canvas.draw_pixmap(0, 0, g.as_ref(), &paint, place(g.width() as f64, g.height() as f64), None);
+            canvas.fill(tiny_skia::Color::TRANSPARENT);
+            match (p.draw, &draw_on) {
+                (Some(u), Some(d)) => {
+                    let svg = d.frame_svg(u, a.easing);
+                    let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the dashed SVG: {e}"))?;
+                    let s = t2.size();
+                    let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
+                        .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
+                    resvg::render(&t2, tf, &mut canvas.as_mut());
                 }
-                let paint = PixmapPaint { opacity: p.opacity.clamp(0.0, 1.0) as f32, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bicubic };
-                canvas.draw_pixmap(0, 0, art.as_ref(), &paint, place(rw as f64, rh as f64), None);
+                _ => {
+                    let place = |w: f64, h: f64| {
+                        // map the raster (w x h at OVER) to the art box, scaled and rotated about the canvas centre
+                        let s = p.scale / OVER;
+                        Transform::from_translate(-(w / 2.0) as f32, -(h / 2.0) as f32)
+                            .post_scale(s as f32, s as f32)
+                            .post_rotate(p.rotate_deg as f32)
+                            .post_translate(cx as f32, (cy + p.dy) as f32)
+                    };
+                    if let (Some(g), true) = (&glow, p.glow > 0.001) {
+                        let paint = PixmapPaint { opacity: (p.glow.min(1.0) * p.opacity) as f32, blend_mode: BlendMode::Plus, quality: FilterQuality::Bicubic };
+                        canvas.draw_pixmap(0, 0, g.as_ref(), &paint, place(g.width() as f64, g.height() as f64), None);
+                    }
+                    let paint = PixmapPaint { opacity: p.opacity.clamp(0.0, 1.0) as f32, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bicubic };
+                    canvas.draw_pixmap(0, 0, art.as_ref(), &paint, place(rw as f64, rh as f64), None);
+                }
             }
+            if f + 1 == n_in.max(1) {
+                canvas.save_png(&preview).with_context(|| format!("writing {}", preview.display()))?;
+            }
+            straight_rgba(&canvas, &mut bytes);
         }
-        if f + 1 == n_in.max(1) {
-            canvas.save_png(&preview).with_context(|| format!("writing {}", preview.display()))?;
-        }
-        straight_rgba(&canvas, &mut bytes);
         if let Err(e) = stdin.write_all(&bytes) {
             write_err = Some(e);
             break;
