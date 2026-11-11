@@ -500,4 +500,19 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    #[ignore]
+    fn measure_peak_rss_fixture() {
+        let sr = 48000usize;
+        let n = 90 * sr;
+        let s = signal("random", n, 42);
+        let x = [s.clone(), s.clone()];
+        let l = if std::env::var("RS_MEASURE_REFERENCE").is_ok() {
+            reference_measure(&x, sr).unwrap()
+        } else {
+            measure(&x, sr).unwrap()
+        };
+        println!("LoudnessDebug: {l:?}");
+    }
 }
