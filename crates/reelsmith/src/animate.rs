@@ -540,20 +540,71 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_straight_rgba_median5_vs_old() {
-        let mut pm = Pixmap::new(256, 1).unwrap();
-        for i in 0..256usize {
-            let a = i as u8;
-            let off = i * 4;
-            pm.data_mut()[off] = a;
-            pm.data_mut()[off + 1] = a;
-            pm.data_mut()[off + 2] = a;
-            pm.data_mut()[off + 3] = a;
+        let (w, h) = (540usize, 540usize);
+        let mut pm = Pixmap::new(w as u32, h as u32).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                let a = match (x + y) % 3 {
+                    0 => 0u8,
+                    1 => 255u8,
+                    _ => 128u8,
+                };
+                let sr = ((x * 7 + y * 13) % 256) as u8;
+                let sg = ((x * 11 + y * 5) % 256) as u8;
+                let sb = ((x * 3 + y * 17) % 256) as u8;
+                pm.data_mut()[i] = (sr as u16 * a as u16 / 255) as u8;
+                pm.data_mut()[i + 1] = (sg as u16 * a as u16 / 255) as u8;
+                pm.data_mut()[i + 2] = (sb as u16 * a as u16 / 255) as u8;
+                pm.data_mut()[i + 3] = a;
+            }
         }
-        let mut out = vec![0u8; pm.data().len()];
+
+        fn old_demultiply_into_vec(pm: &Pixmap, out: &mut Vec<u8>) {
+            out.resize(pm.data().len(), 0);
+            for i in 0..pm.pixels().len() {
+                let c = pm.pixels()[i].demultiply();
+                let off = i * 4;
+                out[off] = c.red();
+                out[off + 1] = c.green();
+                out[off + 2] = c.blue();
+                out[off + 3] = c.alpha();
+            }
+        }
+
+        let mut new_medians: Vec<std::time::Duration> = Vec::new();
+        let mut old_medians: Vec<std::time::Duration> = Vec::new();
         for _ in 0..5 {
-            straight_rgba(&pm, &mut out);
+            let mut out = vec![0u8; pm.data().len()];
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    straight_rgba(&pm, &mut out);
+                    let d = s.elapsed();
+                    std::hint::black_box(&out);
+                    d
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut out = vec![0u8; pm.data().len()];
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    old_demultiply_into_vec(&pm, &mut out);
+                    let d = s.elapsed();
+                    std::hint::black_box(&out);
+                    d
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
         }
-        assert_eq!(out.len(), pm.data().len());
+
+        eprintln!("new straight_rgba medians: {:?}", new_medians);
+        eprintln!("old demultiply into vec medians: {:?}", old_medians);
+        assert_eq!(pm.data().len(), w * h * 4);
     }
 }
 
