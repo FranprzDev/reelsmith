@@ -137,17 +137,45 @@ pub fn read_wav(path: &std::path::Path) -> anyhow::Result<(usize, [Vec<f64>; 2])
     let mut r = hound::WavReader::open(path)?;
     let sp = r.spec();
     let ch = sp.channels as usize;
-    let s: Vec<f64> = match sp.sample_format {
+    let cap = r.duration() as usize;
+    let mut l: Vec<f64> = Vec::with_capacity(cap);
+    let mut rr: Vec<f64> = Vec::with_capacity(cap);
+    match sp.sample_format {
         hound::SampleFormat::Int => {
             let mx = (1i64 << (sp.bits_per_sample - 1)) as f64;
-            r.samples::<i32>().map(|v| v.unwrap() as f64 / mx).collect()
+            collect_frames(r.samples::<i32>(), ch, |v| v as f64 / mx, &mut l, &mut rr)?;
         }
-        hound::SampleFormat::Float => r.samples::<f32>().map(|v| v.unwrap() as f64).collect(),
-    };
-    let n = s.len() / ch;
-    let l: Vec<f64> = (0..n).map(|i| s[i * ch]).collect();
-    let rr: Vec<f64> = (0..n).map(|i| s[i * ch + (ch > 1) as usize]).collect();
+        hound::SampleFormat::Float => {
+            collect_frames(r.samples::<f32>(), ch, |v| v as f64, &mut l, &mut rr)?;
+        }
+    }
     Ok((sp.sample_rate as usize, [l, rr]))
+}
+
+fn collect_frames<S: Copy>(
+    samples: impl Iterator<Item = std::result::Result<S, hound::Error>>,
+    ch: usize,
+    convert: impl Fn(S) -> f64,
+    l: &mut Vec<f64>,
+    rr: &mut Vec<f64>,
+) -> anyhow::Result<()> {
+    let mut frame = [0.0f64; 2];
+    let mut filled = 0usize;
+    for s in samples {
+        let v = convert(s?);
+        match filled {
+            0 => frame[0] = v,
+            1 => frame[1] = v,
+            _ => {}
+        }
+        filled += 1;
+        if filled == ch {
+            l.push(frame[0]);
+            rr.push(if ch > 1 { frame[1] } else { frame[0] });
+            filled = 0;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
