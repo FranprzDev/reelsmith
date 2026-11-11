@@ -324,6 +324,89 @@ end = 1.2
         eprintln!("caption svg 10k: {:?} bytes={}", start.elapsed(), acc);
     }
 
+    impl FrameBuilder {
+        /// previous caption implementation, kept as an isolated reference for benchmarking
+        fn old_caption(&self, s: &mut String, font: &FontInfo, u: f64, text: &str) {
+            let st = &self.plan.caption_style;
+            let sc = 1.0 + st.pop_scale * (1.0 - eout(u / st.pop_dur.max(1e-3)));
+            let a = clamp(u / 0.05 + 0.35);
+            let blur = st.pop_blur * (1.0 - clamp(u / (0.75 * st.pop_dur).max(1e-3)));
+            let size = font.fit(text, st.size, self.plan.caption_max_w);
+            let (cx, by) = (self.plan.width / 2.0, self.plan.caption_y);
+            let cy = by - size * 0.35;
+            let filt = if blur > 1.5 { format!(r#" filter="url(#b{})""#, blur_id(blur)) } else { String::new() };
+            let tr = format!(r#"translate({cx:.1} {cy:.1}) scale({sc:.4}) translate({:.1} {:.1})"#, -cx, -cy);
+            let txt = esc(text);
+            let common = format!(r#"x="{cx:.1}" font-family="{}" font-size="{size:.1}" text-anchor="middle""#, esc(&font.family));
+            let sw = size * st.outline_w;
+            let _ = write!(
+                s,
+                r#"<g transform="{tr}" opacity="{}"{filt}><text {common} y="{:.1}" fill="black" fill-opacity="{sh}" stroke="black" stroke-opacity="{sh}" stroke-width="{sw:.1}" stroke-linejoin="round">{txt}</text><text {common} y="{by:.1}" fill="{}" stroke="{}" stroke-width="{sw:.1}" stroke-linejoin="round" paint-order="stroke">{txt}</text></g>"#,
+                op(a),
+                by + size * st.shadow_dy,
+                esc(&st.fill),
+                esc(&st.outline),
+                sh = op(st.shadow),
+            );
+        }
+    }
+
+    #[test]
+    fn caption_bytes_match_old_reference() {
+        let fb = FrameBuilder::new(test_plan("9:16")).unwrap();
+        let font = fb.font.as_ref().unwrap();
+        let texts = ["HELLO", "WORLD WIDE", "TAIL", "A<B&C>D", "\"quoted\"", "x<y>z"];
+        let mut us = Vec::new();
+        for i in 0..=200 {
+            us.push(i as f64 * 0.01);
+        }
+        for text in &texts {
+            for &u in &us {
+                let mut a = String::new();
+                let mut b = String::new();
+                fb.caption(&mut a, font, u, text);
+                fb.old_caption(&mut b, font, u, text);
+                assert_eq!(a, b, "caption mismatch u={u} text={text}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: cargo test -p promo --lib frame::bench_caption_old_vs_new -- --ignored --nocapture"]
+    fn bench_caption_old_vs_new() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let fb = FrameBuilder::new(test_plan("9:16")).unwrap();
+        let font = fb.font.as_ref().unwrap();
+        let text = "WORLD WIDE";
+        let us: Vec<f64> = (0..100).map(|i| i as f64 * 0.01).collect();
+        let mut old_times = Vec::new();
+        let mut new_times = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            for i in 0..10_000 {
+                let u = us[i % us.len()];
+                let mut s = String::with_capacity(256);
+                fb.old_caption(&mut s, font, u, text);
+                black_box(&s);
+            }
+            old_times.push(start.elapsed());
+            let start = Instant::now();
+            for i in 0..10_000 {
+                let u = us[i % us.len()];
+                let mut s = String::with_capacity(256);
+                fb.caption(&mut s, font, u, text);
+                black_box(&s);
+            }
+            new_times.push(start.elapsed());
+        }
+        old_times.sort();
+        new_times.sort();
+        let old_med = old_times[old_times.len() / 2];
+        let new_med = new_times[new_times.len() / 2];
+        eprintln!("caption old median: {:?}  new median: {:?}", old_med, new_med);
+    }
+
     #[test]
     #[ignore = "benchmark: cargo test -p promo --lib frame::bench_full_svg_10k -- --ignored --nocapture"]
     fn bench_full_svg_10k_reference_vs_new() {
