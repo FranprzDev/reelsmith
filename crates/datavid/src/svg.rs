@@ -259,6 +259,48 @@ mod tests {
     }
 
     #[test]
+    fn esc_unicode_correctness() {
+        let cases = [
+            "café & señor",
+            "niño <b>",
+            "emoji 😀 & <x>",
+            "العربية & <test>",
+            "日本語 > x",
+            "a&b<c>d in русский",
+            "Español: mañana & noche",
+        ];
+        for c in cases {
+            assert_eq!(esc(c), esc_old(c), "mismatch for {c:?}");
+        }
+    }
+
+    #[test]
+    fn esc_repeated_entities() {
+        let cases = [
+            "&&&", "<<<", ">>>", "&<&>", "&&&&", "<<<<", ">>>>",
+            "a&b&c&d", "<><>", "mixed & & & < >", "&&&<<<>>>&&&",
+        ];
+        for c in cases {
+            assert_eq!(esc(c), esc_old(c), "mismatch for {c:?}");
+        }
+    }
+
+    #[test]
+    fn esc_generated_unicode_matches() {
+        let mut s = String::new();
+        for cp in 0u32..=0x10FFFFu32 {
+            if (0xD800..=0xDFFF).contains(&cp) {
+                continue;
+            }
+            if let Some(c) = char::from_u32(cp) {
+                s.push(c);
+            }
+        }
+        let with_specials = format!("&<>{}&<>", s);
+        assert_eq!(esc(&with_specials), esc_old(&with_specials));
+    }
+
+    #[test]
     #[ignore]
     fn median5_bench_200000_calls() {
         use std::time::Instant;
@@ -285,6 +327,37 @@ mod tests {
         let med_old = times_old[2];
         println!("esc_new median5 200000 calls: {:?}", med_new);
         println!("esc_old median5 200000 calls: {:?}", med_old);
+    }
+
+    #[test]
+    #[ignore]
+    fn esc_bench_multi_inputs() {
+        use std::time::Instant;
+        let inputs = [
+            "Short ASCII caption with no escapes here",
+            "a&b<c>d&e<f>g&h<i>j&k<l>m&n",
+            "Unicode Spanish: café, niño, señor & <b>",
+        ];
+        for input in inputs {
+            let mut times_new = Vec::with_capacity(5);
+            let mut times_old = Vec::with_capacity(5);
+            for _ in 0..5 {
+                let start = Instant::now();
+                for _ in 0..200_000usize {
+                    std::hint::black_box(esc(std::hint::black_box(input)));
+                }
+                times_new.push(start.elapsed());
+                let start = Instant::now();
+                for _ in 0..200_000usize {
+                    std::hint::black_box(esc_old(std::hint::black_box(input)));
+                }
+                times_old.push(start.elapsed());
+            }
+            times_new.sort();
+            times_old.sort();
+            println!("input={input:?} esc_new median5 200000 calls: {:?}", times_new[2]);
+            println!("input={input:?} esc_old median5 200000 calls: {:?}", times_old[2]);
+        }
     }
 }
 
