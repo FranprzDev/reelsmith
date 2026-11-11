@@ -278,6 +278,11 @@ fn mux_tmp_path(out: &Path) -> PathBuf {
     parent.join(format!("{name}.{pid}.{counter}.tmp.mp4"))
 }
 
+/// True when `out` is a symbolic link (metadata does not follow the link).
+fn out_is_symlink(out: &Path) -> bool {
+    std::fs::symlink_metadata(out).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
 pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<bool> {
     let work = chunks_dir(p, r);
     let ranges = ranges(p, chunk_frames);
@@ -329,7 +334,16 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    if let Err(e) = std::fs::rename(&tmp, out) {
+    // A symlinked output must keep pointing at its target: rename would
+    // replace the link itself, so follow it with a copy instead (preserving
+    // relative / dangling symlink semantics, including creating the target).
+    if out_is_symlink(out) {
+        if let Err(e) = std::fs::copy(&tmp, out) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        let _ = std::fs::remove_file(&tmp);
+    } else if let Err(e) = std::fs::rename(&tmp, out) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
@@ -491,6 +505,48 @@ end = 1.2
         let out = std::path::Path::new("/tmp/foo/out.mp4");
         let tmp = mux_tmp_path(out);
         assert!(tmp.to_string_lossy().ends_with(".tmp.mp4"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_output_is_detected() {
+        let dir = std::env::temp_dir().join(format!("muxsym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.mp4");
+        std::fs::write(&target, b"x").unwrap();
+        let link = dir.join("link.mp4");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(out_is_symlink(&link));
+        assert!(!out_is_symlink(&target));
+        // dangling relative symlink is still detected
+        let dangling = dir.join("dangling.mp4");
+        let _ = std::fs::remove_file(&dangling);
+        std::os::unix::fs::symlink("nope.mp4", &dangling).unwrap();
+        assert!(out_is_symlink(&dangling));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_output_copy_follows_link() {
+        let dir = std::env::temp_dir().join(format!("muxsymcopy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.mp4");
+        std::fs::write(&target, b"old").unwrap();
+        let link = dir.join("link.mp4");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let tmp = dir.join("tmp.mp4");
+        std::fs::write(&tmp, b"newbytes").unwrap();
+        // emulate the symlink branch
+        assert!(std::fs::copy(&tmp, &link).is_ok());
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(std::fs::read(&target).unwrap(), b"newbytes");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
