@@ -23,8 +23,23 @@ pub struct Loudness {
 
 pub fn measure(x: &[Vec<f64>; 2], sr: usize) -> Result<Loudness> {
     let mut m = EbuR128::new(2, sr as u32, Mode::I | Mode::LRA | Mode::TRUE_PEAK)?;
-    let inter: Vec<f64> = (0..x[0].len()).flat_map(|i| [x[0][i], x[1][i]]).collect();
-    m.add_frames_f64(&inter)?;
+    let n = x[0].len();
+    let mut inter: Vec<f64> = Vec::with_capacity(4096 * 2);
+    if n == 0 {
+        m.add_frames_f64(&inter)?;
+    } else {
+        let mut i = 0usize;
+        while i < n {
+            let end = (i + 4096).min(n);
+            inter.clear();
+            for j in i..end {
+                inter.push(x[0][j]);
+                inter.push(x[1][j]);
+            }
+            m.add_frames_f64(&inter)?;
+            i = end;
+        }
+    }
     let tp = m.true_peak(0)?.max(m.true_peak(1)?);
     Ok(Loudness { integrated_lufs: m.loudness_global()?, true_peak_dbtp: 20.0 * tp.max(1e-12).log10(), lra: m.loudness_range()?, seconds: x[0].len() as f64 / sr as f64 })
 }
@@ -266,6 +281,21 @@ mod tests {
         Ok((y, l))
     }
 
+    fn reference_measure(x: &[Vec<f64>; 2], sr: usize) -> Result<Loudness> {
+        let mut m = EbuR128::new(2, sr as u32, Mode::I | Mode::LRA | Mode::TRUE_PEAK)?;
+        let inter: Vec<f64> = (0..x[0].len()).flat_map(|i| [x[0][i], x[1][i]]).collect();
+        m.add_frames_f64(&inter)?;
+        let tp = m.true_peak(0)?.max(m.true_peak(1)?);
+        Ok(Loudness { integrated_lufs: m.loudness_global()?, true_peak_dbtp: 20.0 * tp.max(1e-12).log10(), lra: m.loudness_range()?, seconds: x[0].len() as f64 / sr as f64 })
+    }
+
+    fn assert_loudness_bits_eq(a: &Loudness, b: &Loudness, what: &str) {
+        assert_eq!(a.integrated_lufs.to_bits(), b.integrated_lufs.to_bits(), "{what} integrated_lufs");
+        assert_eq!(a.true_peak_dbtp.to_bits(), b.true_peak_dbtp.to_bits(), "{what} true_peak_dbtp");
+        assert_eq!(a.lra.to_bits(), b.lra.to_bits(), "{what} lra");
+        assert_eq!(a.seconds.to_bits(), b.seconds.to_bits(), "{what} seconds");
+    }
+
     fn assert_bits_eq(a: &[f64], b: &[f64], what: &str) {
         assert_eq!(a.len(), b.len(), "{what} length");
         for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
@@ -396,5 +426,93 @@ mod tests {
             assert_eq!(r_l.seconds.to_bits(), c_l.seconds.to_bits(), "master seconds case={k}");
             eprintln!("master 6s case={k}: reference {tr:?}, candidate {tc:?}");
         }
+    }
+
+    fn sinusoidal_stereo(n: usize, sr: usize) -> [Vec<f64>; 2] {
+        let l: Vec<f64> = (0..n).map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / sr as f64).sin()).collect();
+        let r: Vec<f64> = (0..n).map(|i| (2.0 * std::f64::consts::PI * 660.0 * i as f64 / sr as f64).sin()).collect();
+        [l, r]
+    }
+
+    #[test]
+    fn measure_matches_reference_bits_288000() {
+        let sr = 48_000;
+        let n = 288_000;
+        let x = sinusoidal_stereo(n, sr);
+        let a = measure(&x, sr).unwrap();
+        let b = reference_measure(&x, sr).unwrap();
+        assert_loudness_bits_eq(&a, &b, "measure 288000");
+    }
+
+    #[test]
+    fn measure_errors_match_reference_for_shorts() {
+        let sr = 48_000;
+        for n in 0..64usize {
+            let x = sinusoidal_stereo(n, sr);
+            let a = measure(&x, sr);
+            let b = reference_measure(&x, sr);
+            match (a, b) {
+                (Ok(la), Ok(lb)) => assert_loudness_bits_eq(&la, &lb, &format!("measure short n={n}")),
+                (Err(ea), Err(eb)) => assert_eq!(format!("{ea:?}"), format!("{eb:?}"), "measure short n={n} error mismatch"),
+                _ => panic!("measure short n={n}: Ok/Err mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_measure_median_5_6s() {
+        use std::time::Instant;
+        let sr = 48_000;
+        let n = 6 * sr;
+    let x = sinusoidal_stereo(n, sr);
+    let mut dr: Vec<u128> = Vec::with_capacity(5);
+    let mut dm: Vec<u128> = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let t0 = Instant::now();
+        let _ = reference_measure(&x, sr).unwrap();
+        dr.push(t0.elapsed().as_nanos());
+        let t0 = Instant::now();
+        let _ = measure(&x, sr).unwrap();
+        dm.push(t0.elapsed().as_nanos());
+    }
+    dr.sort();
+    dm.sort();
+    eprintln!("reference_measure 6s median of 5: {} us", dr[2] / 1000);
+    eprintln!("measure 6s median of 5: {} us", dm[2] / 1000);
+}
+
+    fn noise_stereo(n: usize, sr: usize) -> [Vec<f64>; 2] {
+        [
+            signal("random", n, 0xA5A5_5A5A ^ sr as u64),
+            signal("random", n, 0x5A5A_A5A5 ^ (sr as u64).wrapping_mul(31)),
+        ]
+    }
+
+    #[test]
+    fn measure_matches_reference_bits_noise() {
+        for &sr in &[44100usize, 48000usize] {
+            for &n in &[4095usize, 4096usize, 4097usize, 6 * sr, 30 * sr] {
+                let x = noise_stereo(n, sr);
+                let a = measure(&x, sr).unwrap();
+                let b = reference_measure(&x, sr).unwrap();
+                assert_loudness_bits_eq(&a, &b, &format!("noise sr={sr} n={n}"));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_peak_rss_fixture() {
+        let sr = 48000usize;
+        let n = 90 * sr;
+        let s = signal("random", n, 42);
+        let x = [s.clone(), s.clone()];
+        let l = if std::env::var("RS_MEASURE_REFERENCE").is_ok() {
+            reference_measure(&x, sr).unwrap()
+        } else {
+            measure(&x, sr).unwrap()
+        };
+        println!("LoudnessDebug: {l:?}");
     }
 }
