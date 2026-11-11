@@ -77,6 +77,11 @@ fn cfg(msg: String) -> anyhow::Error {
     ConfigError(msg).into()
 }
 
+/// Whether `k` exactly matches the previously rendered progress, so the cached frame can be reused.
+fn progress_cache_hit(prev: Option<u64>, k: f64) -> bool {
+    prev == Some(k.to_bits())
+}
+
 /// One drawable shape of a normalised SVG: its absolute `M L Q C Z` path data, fill color and opacity.
 #[derive(Debug, Clone)]
 struct Shape {
@@ -434,6 +439,7 @@ pub fn morph(a: &MorphSvgArgs) -> Result<MorphedSvg> {
     let (cx, cy) = (cw as f64 / 2.0, ch as f64 / 2.0);
     let mid = n_in / 2;
     let mut write_err = None;
+    let mut prev_k_bits: Option<u64> = None;
 
     for f in 0..frames {
         // which phase, and eased morph progress k (1 = fully the second shape; the morph-back runs it to 0)
@@ -444,17 +450,20 @@ pub fn morph(a: &MorphSvgArgs) -> Result<MorphedSvg> {
         } else {
             a.easing.at(1.0 - (f - n_in - n_hold + 1) as f64 / n_out as f64)
         };
-        let svg = frame_svg(&engine, &colors, k)?;
-        let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the morphed SVG: {e}"))?;
-        let s = t2.size();
-        canvas.fill(resvg::tiny_skia::Color::TRANSPARENT);
-        let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
-            .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
-        resvg::render(&t2, tf, &mut canvas.as_mut());
+        if !progress_cache_hit(prev_k_bits, k) {
+            let svg = frame_svg(&engine, &colors, k)?;
+            let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the morphed SVG: {e}"))?;
+            let s = t2.size();
+            canvas.fill(resvg::tiny_skia::Color::TRANSPARENT);
+            let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
+                .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
+            resvg::render(&t2, tf, &mut canvas.as_mut());
+            animate::straight_rgba(&canvas, &mut bytes);
+            prev_k_bits = Some(k.to_bits());
+        }
         if f == mid {
             canvas.save_png(&preview).with_context(|| format!("writing {}", preview.display()))?;
         }
-        animate::straight_rgba(&canvas, &mut bytes);
         if let Err(e) = stdin.write_all(&bytes) {
             write_err = Some(e);
             break;
@@ -514,6 +523,15 @@ mod tests {
         assert!(parse_fill(&none).unwrap().is_none());
         let short = vec![("fill".to_string(), "#f08".to_string())];
         assert_eq!(parse_fill(&short).unwrap().unwrap().0, [255.0, 0.0, 136.0]);
+    }
+
+    #[test]
+    fn progress_cache_hit_bits() {
+        let k = 0.375_f64;
+        assert!(progress_cache_hit(Some(k.to_bits()), k));
+        assert!(!progress_cache_hit(None, k));
+        assert!(!progress_cache_hit(Some((k + 0.125).to_bits()), k));
+        assert!(progress_cache_hit(Some(1.0_f64.to_bits()), 1.0));
     }
 
     #[test]
