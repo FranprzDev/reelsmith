@@ -38,7 +38,7 @@ enum Cut {
 /// Cut the plates, `jobs` ffmpeg processes at a time (each shot and overlay is independent); the source clips are
 /// decoded with the backend's hardware decoder when it has one.
 pub fn run(plan: &mut Plan, r: Res, only: Only, jobs: usize, backend: &Backend, ev: &Events) -> Result<()> {
-    measure_crops(plan)?;
+    measure_crops_with_jobs(plan, jobs)?;
     let dir = plan.frames_dir(r);
     std::fs::create_dir_all(&dir)?;
     let mut cuts = vec![];
@@ -151,31 +151,78 @@ fn cut_overlay(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
 
 /// Resolve every `"auto"` / `"full"` crop (cached by asset path in `build/crops.json`).
 pub fn measure_crops(plan: &mut Plan) -> Result<()> {
+    measure_crops_with_jobs(plan, 1)
+}
+
+/// Resolve missing crops using up to `jobs` parallel measurements.
+fn measure_crops_with_jobs(plan: &mut Plan, jobs: usize) -> Result<()> {
     let path = plan.crops_json();
     let mut cache: BTreeMap<String, [u32; 4]> = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let mut changed = false;
-    for o in plan.overlays.iter_mut() {
-        if o.crop_box.is_some() {
-            continue;
-        }
-        let k = o.crop_key();
+    let build = plan.build_dir.clone();
+
+    // Existing explicit crops need no work; cached crops are assigned without probing.
+    let pending_indices: Vec<usize> = plan
+        .overlays
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.crop_box.is_none())
+        .map(|(i, _)| i)
+        .collect();
+
+    for &i in &pending_indices {
+        let k = plan.overlays[i].crop_key();
         if let Some(b) = cache.get(&k) {
-            o.crop_box = Some(*b);
-            continue;
+            plan.overlays[i].crop_box = Some(*b);
         }
-        if !o.asset.is_file() {
-            return Err(MissingInput(format!("motion asset {}", o.asset.display())).into());
+    }
+
+    // Deduplicate the remaining (uncached) pending overlays by crop_key.
+    let uncached: Vec<(usize, String)> = pending_indices
+        .iter()
+        .filter(|&&i| plan.overlays[i].crop_box.is_none())
+        .map(|&i| (i, plan.overlays[i].crop_key()))
+        .collect();
+    let tasks = dedup_pending_crops(&uncached);
+
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    // Build measurement inputs (cloned overlays) in first-occurrence order.
+    let inputs: Vec<(usize, crate::plan::Overlay, String)> = tasks
+        .iter()
+        .map(|(key, members)| (members[0], plan.overlays[members[0]].clone(), key.clone()))
+        .collect();
+
+    let results = pool::map(jobs, &inputs, |(idx, o, _key)| measure(o, &build, *idx))?;
+
+    // Assign and cache only after every measurement succeeded.
+    for ((key, members), b) in tasks.iter().zip(results.iter()) {
+        for &i in members {
+            plan.overlays[i].crop_box = Some(*b);
         }
-        let b = measure(o, &plan.build_dir)?;
-        o.crop_box = Some(b);
-        cache.insert(k, b);
-        changed = true;
+        cache.insert(key.clone(), *b);
     }
-    if changed {
-        std::fs::create_dir_all(&plan.build_dir)?;
-        std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
-    }
+
+    std::fs::create_dir_all(&build)?;
+    std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
     Ok(())
+}
+
+/// Deduplicate pending (overlay_index, crop_key) pairs by crop_key, preserving first occurrence.
+fn dedup_pending_crops(items: &[(usize, String)]) -> Vec<(String, Vec<usize>)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut members: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, key) in items {
+        if !members.contains_key(key) {
+            order.push(key.clone());
+        }
+        members.entry(key.clone()).or_default().push(*idx);
+    }
+    order
+        .into_iter()
+        .map(|k| (k.clone(), members.remove(&k).unwrap()))
+        .collect()
 }
 
 /// Parse `(width, height, duration)` from a single ffprobe JSON value.
@@ -195,49 +242,51 @@ fn asset_info(o: &Overlay) -> Result<(u32, u32, Option<f64>)> {
 }
 
 /// the union of the non-transparent pixels over 8 frames spread across the asset (padded 4 px, even size)
-fn measure(o: &Overlay, build: &Path) -> Result<[u32; 4]> {
+fn measure(o: &Overlay, build: &Path, scan_idx: usize) -> Result<[u32; 4]> {
     let (w, h, dur_opt) = asset_info(o)?;
     if matches!(o.crop, crate::config::Crop::Mode(CropMode::Full)) {
         return Ok([0, 0, w, h]);
     }
     let dur = dur_opt.unwrap_or(1.0).max(0.1);
-    let tmp = build.join("cropscan");
+    let tmp = build.join(format!("cropscan_{}", scan_idx));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)?;
-    let args: Vec<String> = ["-i".into(), o.asset.display().to_string(), "-vf".into(), format!("fps={:.4},format=rgba", 8.0 / dur), "-frames:v".into(), "8".into(), tmp.join("f_%02d.png").display().to_string()].to_vec();
-    ffmpeg(&args, &format!("measuring the crop of {}", o.label()))?;
-    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-    for e in std::fs::read_dir(&tmp)? {
-        let p = e?.path();
-        let dec = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&p)?));
-        let mut rd = dec.read_info()?;
-        let mut buf = vec![0; rd.output_buffer_size()];
-        let info = rd.next_frame(&mut buf)?;
-        if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Ok([0, 0, w, h]);
-        }
-        for y in 0..info.height {
-            let row = &buf[y as usize * info.line_size..][..info.width as usize * 4];
-            for x in 0..info.width {
-                if row[x as usize * 4 + 3] > 16 {
-                    x0 = x0.min(x);
-                    x1 = x1.max(x);
-                    y0 = y0.min(y);
-                    y1 = y1.max(y);
+    let result = (|| {
+        let args: Vec<String> = ["-i".into(), o.asset.display().to_string(), "-vf".into(), format!("fps={:.4},format=rgba", 8.0 / dur), "-frames:v".into(), "8".into(), tmp.join("f_%02d.png").display().to_string()].to_vec();
+        ffmpeg(&args, &format!("measuring the crop of {}", o.label()))?;
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for e in std::fs::read_dir(&tmp)? {
+            let p = e?.path();
+            let dec = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&p)?));
+            let mut rd = dec.read_info()?;
+            let mut buf = vec![0; rd.output_buffer_size()];
+            let info = rd.next_frame(&mut buf)?;
+            if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+                return Ok([0, 0, w, h]);
+            }
+            for y in 0..info.height {
+                let row = &buf[y as usize * info.line_size..][..info.width as usize * 4];
+                for x in 0..info.width {
+                    if row[x as usize * 4 + 3] > 16 {
+                        x0 = x0.min(x);
+                        x1 = x1.max(x);
+                        y0 = y0.min(y);
+                        y1 = y1.max(y);
+                    }
                 }
             }
         }
-    }
+        if x0 == u32::MAX {
+            return Ok([0, 0, w, h]);
+        }
+        let pad = 4;
+        let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+        let (x1, y1) = ((x1 + pad + 1).min(w), (y1 + pad + 1).min(h));
+        let (cw, ch) = ((x1 - x0) & !1, (y1 - y0) & !1);
+        Ok([x0, y0, cw.max(2), ch.max(2)])
+    })();
     let _ = std::fs::remove_dir_all(&tmp);
-    if x0 == u32::MAX {
-        return Ok([0, 0, w, h]);
-    }
-    let pad = 4;
-    let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
-    let (x1, y1) = ((x1 + pad + 1).min(w), (y1 + pad + 1).min(h));
-    let (cw, ch) = ((x1 - x0) & !1, (y1 - y0) & !1);
-    Ok([x0, y0, cw.max(2), ch.max(2)])
+    result
 }
 
 #[cfg(test)]
