@@ -502,7 +502,7 @@ pub(crate) fn straight_rgba(pm: &Pixmap, out: &mut Vec<u8>) {
         let a = src[3];
         if a == 255 {
             dst.copy_from_slice(src);
-        } else if a == 0 {
+        } else if a == 0 && src[0] == 0 && src[1] == 0 && src[2] == 0 {
             dst.fill(0);
         } else {
             let c = pm.pixels()[i].demultiply();
@@ -605,6 +605,55 @@ mod tests {
         eprintln!("new straight_rgba medians: {:?}", new_medians);
         eprintln!("old demultiply into vec medians: {:?}", old_medians);
         assert_eq!(pm.data().len(), w * h * 4);
+    }
+
+    #[test]
+    fn straight_rgba_alpha0_all_values_per_channel() {
+        // alpha 0 with every possible value in each channel (and combinations), including nonzero RGB
+        for v in 0u8..=255 {
+            for channel in 0..3usize {
+                let mut pm = Pixmap::new(1, 1).unwrap();
+                pm.data_mut()[channel] = v;
+                pm.data_mut()[3] = 0;
+                let mut out = Vec::new();
+                straight_rgba(&pm, &mut out);
+                let c = pm.pixels()[0].demultiply();
+                assert_eq!(out, vec![c.red(), c.green(), c.blue(), c.alpha()]);
+            }
+        }
+        // all three channels simultaneously taking all values
+        for v in 0u8..=255 {
+            let mut pm = Pixmap::new(1, 1).unwrap();
+            pm.data_mut()[0] = v;
+            pm.data_mut()[1] = v;
+            pm.data_mut()[2] = v;
+            pm.data_mut()[3] = 0;
+            let mut out = Vec::new();
+            straight_rgba(&pm, &mut out);
+            let c = pm.pixels()[0].demultiply();
+            assert_eq!(out, vec![c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+    }
+
+    #[test]
+    fn straight_rgba_varied_alpha_and_channels() {
+        // Pixmap data_mut can violate the nominal premul invariant; must match demultiply exactly
+        let mut pm = Pixmap::new(256, 4).unwrap();
+        for y in 0..4usize {
+            for x in 0..256usize {
+                let i = (y * 256 + x) * 4;
+                pm.data_mut()[i] = ((x * 17 + y * 97 + 3) % 256) as u8;
+                pm.data_mut()[i + 1] = ((x * 31 + y * 53 + 11) % 256) as u8;
+                pm.data_mut()[i + 2] = ((x * 53 + y * 13 + 7) % 256) as u8;
+                pm.data_mut()[i + 3] = ((x + y * 64) % 256) as u8;
+            }
+        }
+        let mut out = Vec::new();
+        straight_rgba(&pm, &mut out);
+        for i in 0..(256 * 4) {
+            let c = pm.pixels()[i].demultiply();
+            assert_eq!(&out[i * 4..i * 4 + 4], &[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
     }
 }
 
