@@ -395,3 +395,435 @@ mod tests {
         eprintln!("impulse 2.2 median {:?}", imp_times[2]);
     }
 }
+
+#[cfg(test)]
+mod wav_stream_tests {
+    use std::path::{Path, PathBuf};
+
+    // Exact legacy reference. Copied verbatim from the original implementation
+    // so we can compare new production output bit-for-bit against the old stream.
+    pub fn read_wav(path: &Path) -> anyhow::Result<(usize, [Vec<f64>; 2])> {
+        let mut r = hound::WavReader::open(path)?;
+        let sp = r.spec();
+        let ch = sp.channels as usize;
+        let s: Vec<f64> = match sp.sample_format {
+            hound::SampleFormat::Int => {
+                let mx = (1i64 << (sp.bits_per_sample - 1)) as f64;
+                r.samples::<i32>()
+                    .map(|v| v.unwrap() as f64 / mx)
+                    .collect()
+            }
+            hound::SampleFormat::Float => r.samples::<f32>().map(|v| v.unwrap() as f64).collect(),
+        };
+        let n = s.len() / ch;
+        let l = (0..n).map(|i| s[i * ch]).collect();
+        let rr = (0..n).map(|i| s[i * ch + (ch > 1) as usize]).collect();
+        Ok((sp.sample_rate as usize, [l, rr]))
+    }
+
+    type WavSample<T> = std::result::Result<T, hound::Error>;
+
+    fn temp_path(tag: &str) -> PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "wav_stream_tests_{}_{}_{}.wav",
+            tag,
+            std::process::id(),
+            n
+        ))
+    }
+
+    fn write_int_wav(path: &Path, channels: u16, rate: u32, bits: u16, samples: &[i32]) {
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: rate,
+            bits_per_sample: bits,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for &s in samples {
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    fn write_float_wav(path: &Path, channels: u16, rate: u32, samples: &[f32]) {
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for &s in samples {
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    fn assert_streams_bit_eq(
+        new: &(usize, [Vec<f64>; 2]),
+        old: &(usize, [Vec<f64>; 2]),
+        tag: &str,
+    ) {
+        assert_eq!(new.0, old.0, "[{tag}] sample rate mismatch");
+        assert_eq!(
+            new.1[0].len(),
+            old.1[0].len(),
+            "[{tag}] left channel length mismatch"
+        );
+        assert_eq!(
+            new.1[1].len(),
+            old.1[1].len(),
+            "[{tag}] right channel length mismatch"
+        );
+        for (i, (a, b)) in new.1[0].iter().zip(old.1[0].iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "[{tag}] left sample {i} bits differ: new={:?}({:016x}) old={:?}({:016x})",
+                a,
+                a.to_bits(),
+                b,
+                b.to_bits()
+            );
+        }
+        for (i, (a, b)) in new.1[1].iter().zip(old.1[1].iter()).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "[{tag}] right sample {i} bits differ: new={:?}({:016x}) old={:?}({:016x})",
+                a,
+                a.to_bits(),
+                b,
+                b.to_bits()
+            );
+        }
+    }
+
+    fn run_and_compare(path: &Path, tag: &str) {
+        let new = super::read_wav(path).expect("new read_wav failed");
+        let old = read_wav(path).expect("legacy read_wav failed");
+        assert_streams_bit_eq(&new, &old, tag);
+    }
+
+    // ---------- PCM16 ----------
+
+    #[test]
+    fn pcm16_mono_exact_bits() {
+        let p = temp_path("pcm16_mono");
+        let samples: Vec<i32> = vec![
+            i16::MIN as i32,
+            -1,
+            0,
+            1,
+            i16::MAX as i32,
+            12345,
+            -12345,
+            0,
+            7,
+            -7,
+        ];
+        write_int_wav(&p, 1, 8000, 16, &samples);
+        run_and_compare(&p, "pcm16_mono");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pcm16_stereo_exact_bits() {
+        let p = temp_path("pcm16_stereo");
+        // 10 samples => 5 full 2ch frames (whole-frame count required by Hound).
+        let samples: Vec<i32> = vec![
+            i16::MIN as i32,
+            i16::MAX as i32,
+            0,
+            100,
+            -100,
+            1,
+            -1,
+            20000,
+            -20000,
+            i16::MIN as i32,
+        ];
+        write_int_wav(&p, 2, 44100, 16, &samples);
+        run_and_compare(&p, "pcm16_stereo");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pcm16_three_channel_exact_bits() {
+        let p = temp_path("pcm16_3ch");
+        let samples: Vec<i32> = vec![
+            1, 2, 3, -100, 100, 200, i16::MAX as i32, i16::MIN as i32, 0, 7, -7, 11,
+        ];
+        write_int_wav(&p, 3, 22050, 16, &samples);
+        run_and_compare(&p, "pcm16_3ch");
+        std::fs::remove_file(&p).ok();
+    }
+
+    // ---------- PCM24 ----------
+
+    const I24_MIN: i32 = -8_388_608;
+    const I24_MAX: i32 = 8_388_607;
+
+    #[test]
+    fn pcm24_mono_exact_bits() {
+        let p = temp_path("pcm24_mono");
+        let samples: Vec<i32> = vec![I24_MIN, -1, 0, 1, I24_MAX, 1_234_567, -1_234_567, 0];
+        write_int_wav(&p, 1, 8000, 24, &samples);
+        run_and_compare(&p, "pcm24_mono");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pcm24_stereo_exact_bits() {
+        let p = temp_path("pcm24_stereo");
+        let samples: Vec<i32> = vec![
+            I24_MIN,
+            I24_MAX,
+            0,
+            12_345,
+            -12_345,
+            1,
+            -1,
+            4_000_000,
+            -4_000_000,
+            I24_MAX,
+        ];
+        write_int_wav(&p, 2, 48000, 24, &samples);
+        run_and_compare(&p, "pcm24_stereo");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pcm24_three_channel_exact_bits() {
+        let p = temp_path("pcm24_3ch");
+        let samples: Vec<i32> = vec![
+            1, 2, 3, -1_000_000, 1_000_000, 2_000_000, I24_MAX, I24_MIN, 0, 42, -42, 7,
+        ];
+        write_int_wav(&p, 3, 96000, 24, &samples);
+        run_and_compare(&p, "pcm24_3ch");
+        std::fs::remove_file(&p).ok();
+    }
+
+    // ---------- PCM32 ----------
+
+    #[test]
+    fn pcm32_mono_exact_bits() {
+        let p = temp_path("pcm32_mono");
+        let samples: Vec<i32> = vec![
+            i32::MIN,
+            -1,
+            0,
+            1,
+            i32::MAX,
+            123_456_789,
+            -123_456_789,
+        ];
+        write_int_wav(&p, 1, 8000, 32, &samples);
+        run_and_compare(&p, "pcm32_mono");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pcm32_stereo_exact_bits() {
+        let p = temp_path("pcm32_stereo");
+        let samples: Vec<i32> = vec![
+            i32::MIN,
+            i32::MAX,
+            0,
+            i32::MIN / 2,
+            i32::MAX / 2,
+            1,
+            -1,
+            2_000_000_000,
+            -2_000_000_000,
+            17,
+        ];
+        write_int_wav(&p, 2, 44100, 32, &samples);
+        run_and_compare(&p, "pcm32_stereo");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn pcm32_three_channel_exact_bits() {
+        let p = temp_path("pcm32_3ch");
+        let samples: Vec<i32> = vec![
+            1, 2, 3, -1_000_000_000, 1_000_000_000, 2_000_000_000, i32::MAX, i32::MIN, 0, 42,
+            -42, 7,
+        ];
+        write_int_wav(&p, 3, 88200, 32, &samples);
+        run_and_compare(&p, "pcm32_3ch");
+        std::fs::remove_file(&p).ok();
+    }
+
+    // ---------- Float32 (NaN / Inf / signed zero) ----------
+
+    #[test]
+    fn float32_mono_exact_bits() {
+        let p = temp_path("f32_mono");
+        let samples: Vec<f32> = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            0.0,
+        ];
+        write_float_wav(&p, 1, 44100, &samples);
+        run_and_compare(&p, "f32_mono");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn float32_stereo_exact_bits() {
+        let p = temp_path("f32_stereo");
+        // 16 samples => 8 full 2ch frames (whole-frame count required by Hound).
+        let samples: Vec<f32> = vec![
+            f32::NAN,
+            0.0,
+            f32::INFINITY,
+            -0.0,
+            f32::NEG_INFINITY,
+            1.0,
+            0.0,
+            -1.0,
+            -0.0,
+            0.5,
+            0.25,
+            -0.25,
+            7.5,
+            8.5,
+            9.5,
+            f32::NEG_INFINITY,
+        ];
+        write_float_wav(&p, 2, 48000, &samples);
+        run_and_compare(&p, "f32_stereo");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn float32_three_channel_exact_bits() {
+        let p = temp_path("f32_3ch");
+        let samples: Vec<f32> = vec![
+            f32::NAN,
+            0.0,
+            -0.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            1e-30,
+            -1e-30,
+            0.0,
+            -0.0,
+        ];
+        write_float_wav(&p, 3, 96000, &samples);
+        run_and_compare(&p, "f32_3ch");
+        std::fs::remove_file(&p).ok();
+    }
+
+    // ---------- collect_frames: trailing partial frames via mock iterators ----------
+
+    #[test]
+    fn collect_frames_empty_iterator() {
+        let samples: Vec<WavSample<i32>> = vec![];
+        let mut l: Vec<f64> = Vec::new();
+        let mut rr: Vec<f64> = Vec::new();
+        super::collect_frames(samples.into_iter(), 2, |v| v as f64, &mut l, &mut rr).unwrap();
+        assert!(l.is_empty());
+        assert!(rr.is_empty());
+    }
+
+    #[test]
+    fn collect_frames_partial_frame_mono() {
+        // ch == 1: every sample is a complete frame, nothing is trailing.
+        let samples: Vec<WavSample<i32>> = vec![Ok(100), Ok(200), Ok(300)];
+        let mut l: Vec<f64> = Vec::new();
+        let mut rr: Vec<f64> = Vec::new();
+        super::collect_frames(samples.into_iter(), 1, |v| v as f64, &mut l, &mut rr).unwrap();
+        assert_eq!(l, vec![100.0, 200.0, 300.0]);
+        assert_eq!(rr, vec![100.0, 200.0, 300.0]);
+    }
+
+    #[test]
+    fn collect_frames_trailing_partial_frame_stereo_is_dropped() {
+        // 5 samples, ch = 2 => 2 full frames + 1 trailing sample dropped.
+        let samples: Vec<WavSample<i32>> = vec![Ok(1), Ok(2), Ok(3), Ok(4), Ok(5)];
+        let mut l: Vec<f64> = Vec::new();
+        let mut rr: Vec<f64> = Vec::new();
+        super::collect_frames(samples.into_iter(), 2, |v| v as f64, &mut l, &mut rr).unwrap();
+        assert_eq!(l, vec![1.0, 3.0]);
+        assert_eq!(rr, vec![2.0, 4.0]);
+    }
+
+    #[test]
+    fn collect_frames_trailing_partial_frame_three_channel_is_dropped() {
+        // 4 samples, ch = 3 => 1 full frame + 1 trailing sample dropped.
+        let samples: Vec<WavSample<i32>> = vec![Ok(1), Ok(2), Ok(3), Ok(4)];
+        let mut l: Vec<f64> = Vec::new();
+        let mut rr: Vec<f64> = Vec::new();
+        super::collect_frames(samples.into_iter(), 3, |v| v as f64, &mut l, &mut rr).unwrap();
+        assert_eq!(l, vec![1.0]);
+        assert_eq!(rr, vec![2.0]);
+    }
+
+    #[test]
+    fn collect_frames_exact_multiple_of_channels() {
+        let samples: Vec<WavSample<i32>> = vec![Ok(1), Ok(2), Ok(3), Ok(4), Ok(5), Ok(6)];
+        let mut l: Vec<f64> = Vec::new();
+        let mut rr: Vec<f64> = Vec::new();
+        super::collect_frames(samples.into_iter(), 3, |v| v as f64, &mut l, &mut rr).unwrap();
+        assert_eq!(l, vec![1.0, 4.0]);
+        assert_eq!(rr, vec![2.0, 5.0]);
+    }
+
+    #[test]
+    fn collect_frames_convert_applied() {
+        let samples: Vec<WavSample<i32>> = vec![Ok(8), Ok(16), Ok(24), Ok(32)];
+        let mut l: Vec<f64> = Vec::new();
+        let mut rr: Vec<f64> = Vec::new();
+        super::collect_frames(samples.into_iter(), 2, |v| v as f64 / 8.0, &mut l, &mut rr)
+            .unwrap();
+        assert_eq!(l, vec![1.0, 3.0]);
+        assert_eq!(rr, vec![2.0, 4.0]);
+    }
+
+    // ---------- Benchmark (ignored by default) ----------
+
+    #[test]
+    #[ignore]
+    fn bench_read_wav() {
+        let path = std::env::var("RS_WAV_PATH").expect("RS_WAV_PATH env var must point to a .wav file");
+        let p = PathBuf::from(path);
+        let use_old = std::env::var("RS_WAV_OLD").is_ok();
+
+        let start = std::time::Instant::now();
+        let (rate, data) = if use_old {
+            std::hint::black_box(read_wav(&p).expect("legacy read_wav failed"))
+        } else {
+            std::hint::black_box(super::read_wav(&p).expect("new read_wav failed"))
+        };
+        let elapsed = start.elapsed();
+
+        println!(
+            "bench_read_wav: old={} path={:?} sample_rate={} frames_l={} frames_r={} elapsed={:?}",
+            use_old,
+            p,
+            rate,
+            data[0].len(),
+            data[1].len(),
+            elapsed
+        );
+    }
+}
