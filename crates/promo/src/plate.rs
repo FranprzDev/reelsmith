@@ -132,7 +132,7 @@ fn cut_overlay(plan: &Plan, r: Res, i: usize) -> Result<Option<String>> {
     }
     let vf = format!("fps={},crop={cw}:{ch}:{cx}:{cy},scale={pw}:-2:flags=lanczos,format=rgba", plan.fps);
     let pat = dir.join(format!("ov_{i:02}_%04d.png"));
-    let args: Vec<String> = ["-i".into(), o.asset.display().to_string(), "-frames:v".into(), n.to_string(), "-vf".into(), vf, "-start_number".into(), "0".into(), pat.display().to_string()].to_vec();
+    let args = overlay_png_args(o.asset.display().to_string(), n, vf, pat.display().to_string());
     ffmpeg(&args, &o.label())?;
     // an asset shorter than its slot holds its last frame
     let mut last = None;
@@ -176,6 +176,25 @@ pub fn measure_crops(plan: &mut Plan) -> Result<()> {
         std::fs::write(&path, serde_json::to_string_pretty(&cache)?)?;
     }
     Ok(())
+}
+
+/// FFmpeg arguments for an overlay's intermediate PNG sequence (fast lossless PNG encoding, identical pixels).
+fn overlay_png_args(input: String, frames: usize, vf: String, output: String) -> Vec<String> {
+    vec![
+        "-i".to_string(),
+        input,
+        "-frames:v".to_string(),
+        frames.to_string(),
+        "-vf".to_string(),
+        vf,
+        "-compression_level".to_string(),
+        "1".to_string(),
+        "-pred".to_string(),
+        "0".to_string(),
+        "-start_number".to_string(),
+        "0".to_string(),
+        output,
+    ]
 }
 
 /// Parse `(width, height, duration)` from a single ffprobe JSON value.
@@ -260,5 +279,12 @@ mod tests {
             "format": {"duration": "1.0"}
         });
         assert!(parse_asset_info(&v).is_err());
+    }
+
+    #[test]
+    fn overlay_png_args_use_fast_png_settings() {
+        let args = overlay_png_args("in.mov".to_string(), 2, "vf".to_string(), "out.png".to_string());
+        assert!(args.windows(2).any(|w| w[0] == "-compression_level" && w[1] == "1"));
+        assert!(args.windows(2).any(|w| w[0] == "-pred" && w[1] == "0"));
     }
 }
