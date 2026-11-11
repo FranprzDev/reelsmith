@@ -497,10 +497,63 @@ impl DrawOn {
 
 /// Straight (non-premultiplied) RGBA bytes for ffmpeg's `rgba` input.
 pub(crate) fn straight_rgba(pm: &Pixmap, out: &mut Vec<u8>) {
-    out.clear();
-    for px in pm.pixels() {
-        let c = px.demultiply();
-        out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    out.resize(pm.data().len(), 0);
+    for (i, (src, dst)) in pm.data().chunks_exact(4).zip(out.chunks_exact_mut(4)).enumerate() {
+        let a = src[3];
+        if a == 255 {
+            dst.copy_from_slice(src);
+        } else if a == 0 {
+            dst.fill(0);
+        } else {
+            let c = pm.pixels()[i].demultiply();
+            dst.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use resvg::tiny_skia::Pixmap;
+
+    #[test]
+    fn straight_rgba_all_alpha() {
+        let mut pm = Pixmap::new(256, 1).unwrap();
+        for i in 0..256usize {
+            let a = i as u8;
+            let off = i * 4;
+            pm.data_mut()[off] = a;
+            pm.data_mut()[off + 1] = a;
+            pm.data_mut()[off + 2] = a;
+            pm.data_mut()[off + 3] = a;
+        }
+        let mut expected = Vec::with_capacity(pm.data().len());
+        for px in pm.pixels() {
+            let c = px.demultiply();
+            expected.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+        let mut out = Vec::new();
+        straight_rgba(&pm, &mut out);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_straight_rgba_median5_vs_old() {
+        let mut pm = Pixmap::new(256, 1).unwrap();
+        for i in 0..256usize {
+            let a = i as u8;
+            let off = i * 4;
+            pm.data_mut()[off] = a;
+            pm.data_mut()[off + 1] = a;
+            pm.data_mut()[off + 2] = a;
+            pm.data_mut()[off + 3] = a;
+        }
+        let mut out = vec![0u8; pm.data().len()];
+        for _ in 0..5 {
+            straight_rgba(&pm, &mut out);
+        }
+        assert_eq!(out.len(), pm.data().len());
     }
 }
 
