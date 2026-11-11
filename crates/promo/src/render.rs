@@ -105,27 +105,34 @@ fn stamp(dir: &Path, name: &str) -> String {
 
 /// what a chunk's pixels depend on
 fn chunk_key(fb: &FrameBuilder, r: Res, a: usize, b: usize, backend: &Backend) -> String {
+    use std::hash::Hasher;
     let p = &fb.plan;
     let fd = p.frames_dir(r);
     let (w, h) = p.out_size(r);
-    let mut s = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
+    let mut hsh = std::collections::hash_map::DefaultHasher::new();
+    let header = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
+    hsh.write(header.as_bytes());
     for (i, sh) in p.shots.iter().enumerate() {
         if p.fi(sh.t0) < b && p.fi(sh.t1) > a {
-            s.push_str(&stamp(&fd, &format!(".shot_{i:03}")));
+            let st = stamp(&fd, &format!(".shot_{i:03}"));
+            hsh.write(st.as_bytes());
         }
     }
     for (i, o) in p.overlays.iter().enumerate() {
         if p.fi(o.t0) < b && p.fi(o.t1) > a {
-            s.push_str(&stamp(&fd, &format!(".ov_{i:02}")));
+            let st = stamp(&fd, &format!(".ov_{i:02}"));
+            hsh.write(st.as_bytes());
         }
     }
     if fb.font.is_some() {
-        s.push_str(&p.font.display().to_string());
+        hsh.write(p.font.display().to_string().as_bytes());
     }
     for f in a..b {
-        s.push_str(&fb.svg(f));
+        let svg = fb.svg(f);
+        hsh.write(svg.as_bytes());
     }
-    key_of(&s)
+    hsh.write_u8(0xff);
+    format!("{:016x}", hsh.finish())
 }
 
 /// Render chunk `k` (frames `a..b`) unless it is current; a killed render is retried `retries` times.
@@ -312,4 +319,139 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
     let _ = std::fs::remove_file(&tmp);
     std::fs::write(&key_file, format!("{key}\n{}", crate::plan::file_fingerprint(out)))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PromoFile;
+    use crate::encode::{Backend, Encoder, Gpu};
+    use crate::frame::FrameBuilder;
+    use crate::plan::{Overrides, Plan};
+
+    fn test_plan() -> Plan {
+        let dir = std::env::temp_dir().join(format!("reelsmith-render-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let font = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fonts/PixelifySans-Bold.ttf");
+        let font = font.to_string_lossy().replace('\\', "/");
+        let cfg = format!(
+            r#"
+[video]
+name = "render-parity"
+aspect = "9:16"
+flashes = [0.0, 0.5, 1.0]
+
+[[shot]]
+clip = "clip-a"
+dur = 0.6
+
+[[shot]]
+clip = "clip-b"
+dur = 0.6
+
+[[overlay]]
+asset = "overlay"
+t0 = 0.1
+t1 = 1.1
+crop = [0, 0, 100, 50]
+x = 10.0
+y = 20.0
+w = 540.0
+
+[look]
+vignette = 0.42
+flash_opacity = 0.63
+flash_dur = 0.25
+
+[captions]
+enabled = true
+font = "{font}"
+words = [[0.0, "HELLO"], [0.45, "WORLD WIDE"], [1.0, "TAIL"]]
+end = 1.2
+"#
+        );
+        let f = PromoFile::from_toml_str(&cfg, &dir).unwrap();
+        Plan::resolve(f, &dir.join("render.toml"), &Overrides::default()).unwrap()
+    }
+
+    fn backend() -> Backend {
+        Backend { encoder: Encoder::X264, gpu: Gpu::None, hw_decode: None, device: None, reason: String::new(), probes: vec![] }
+    }
+
+    fn old_chunk_key(fb: &FrameBuilder, r: crate::config::Res, a: usize, b: usize, backend: &Backend) -> String {
+        let p = &fb.plan;
+        let fd = p.frames_dir(r);
+        let (w, h) = p.out_size(r);
+        let mut s = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
+        for (i, sh) in p.shots.iter().enumerate() {
+            if p.fi(sh.t0) < b && p.fi(sh.t1) > a {
+                s.push_str(&stamp(&fd, &format!(".shot_{i:03}")));
+            }
+        }
+        for (i, o) in p.overlays.iter().enumerate() {
+            if p.fi(o.t0) < b && p.fi(o.t1) > a {
+                s.push_str(&stamp(&fd, &format!(".ov_{i:02}")));
+            }
+        }
+        if fb.font.is_some() {
+            s.push_str(&p.font.display().to_string());
+        }
+        for f in a..b {
+            s.push_str(&fb.svg(f));
+        }
+        key_of(&s)
+    }
+
+    #[test]
+    fn chunk_key_matches_legacy_concat() {
+        let fb = FrameBuilder::new(test_plan()).unwrap();
+        let b = backend();
+        let n = fb.plan.frames();
+        let r = crate::config::Res::Draft;
+        for &(a, end) in &[(0usize, 1usize), (0, n), (2, 5), (n.saturating_sub(3), n)] {
+            let new = chunk_key(&fb, r, a, end, &b);
+            let old = old_chunk_key(&fb, r, a, end, &b);
+            assert_eq!(new, old, "range {a}..{end}");
+        }
+    }
+
+    #[test]
+    fn chunk_key_caption_overlay_fixture() {
+        let fb = FrameBuilder::new(test_plan()).unwrap();
+        let b = backend();
+        let new = chunk_key(&fb, crate::config::Res::Preview, 0, fb.plan.frames(), &b);
+        let old = old_chunk_key(&fb, crate::config::Res::Preview, 0, fb.plan.frames(), &b);
+        assert_eq!(new, old);
+    }
+
+    #[test]
+    #[ignore = "benchmark: cargo test -p promo --lib render::tests::bench_chunk_key_10k -- --ignored --nocapture"]
+    fn bench_chunk_key_10k() {
+        use std::hash::Hasher;
+        use std::hint::black_box;
+        use std::time::Instant;
+        let chunk = "a".repeat(8192);
+        let chunks: Vec<String> = (0..10_000).map(|_| chunk.clone()).collect();
+
+        let start = Instant::now();
+        let mut s = String::with_capacity(chunks.len() * chunk.len());
+        for c in &chunks {
+            s.push_str(c);
+        }
+        let old = key_of(&s);
+        let old_t = start.elapsed();
+        black_box(old);
+
+        let start = Instant::now();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for c in &chunks {
+            h.write(c.as_bytes());
+        }
+        h.write_u8(0xff);
+        let new = format!("{:016x}", h.finish());
+        let new_t = start.elapsed();
+        black_box(new);
+
+        eprintln!("old concat+hash: {old_t:?}; streaming: {new_t:?}");
+    }
 }
