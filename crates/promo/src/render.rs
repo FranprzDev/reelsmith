@@ -278,7 +278,24 @@ fn mux_tmp_path(out: &Path) -> PathBuf {
     parent.join(format!("{name}.{pid}.{counter}.tmp.mp4"))
 }
 
-/// True when `out` is a symbolic link (metadata does not follow the link).
+/// True when `out` already exists in any form (regular file, hard link, symlink
+/// even if dangling, directory, ...). `symlink_metadata` does not follow links,
+/// so a dangling symlink still counts as present. Rename is only used for
+/// genuinely absent destinations (see `mux`): renaming over an existing path
+/// replaces it (new inode, breaking hard links and changing permissions),
+/// whereas copying overwrites in place and preserves those semantics (and
+/// fails on read-only destinations, as the old behaviour did).
+fn out_exists(out: &Path) -> bool {
+    // "Exists" here means "not a NotFound": any present entry OR any other
+    // metadata error keeps the copy branch, so the rename optimization is
+    // used only when symlink_metadata returns NotFound.
+    match std::fs::symlink_metadata(out) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+#[cfg(test)]
 fn out_is_symlink(out: &Path) -> bool {
     std::fs::symlink_metadata(out).map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
@@ -334,10 +351,13 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    // A symlinked output must keep pointing at its target: rename would
-    // replace the link itself, so follow it with a copy instead (preserving
-    // relative / dangling symlink semantics, including creating the target).
-    if out_is_symlink(out) {
+    // Only a genuinely absent destination may use the rename optimization:
+    // renaming over an existing path replaces it (new inode, breaking hard
+    // links and changing permissions). For any existing output - symlink even
+    // if dangling, regular file, hard link, directory - keep the copy branch,
+    // which overwrites in place (preserving inode/hard-link semantics where
+    // possible) and fails on read-only destinations as before.
+    if out_exists(out) {
         if let Err(e) = std::fs::copy(&tmp, out) {
             let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
@@ -505,6 +525,32 @@ end = 1.2
         let out = std::path::Path::new("/tmp/foo/out.mp4");
         let tmp = mux_tmp_path(out);
         assert!(tmp.to_string_lossy().ends_with(".tmp.mp4"));
+    }
+
+    #[test]
+    fn out_exists_regular_file_and_absent_path() {
+        let dir = std::env::temp_dir().join(format!("outexists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("regular.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(out_exists(&file));
+        let absent = dir.join("absent.txt");
+        assert!(!out_exists(&absent));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn out_exists_dangling_symlink() {
+        let dir = std::env::temp_dir().join(format!("outexistsdangling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dangling = dir.join("dangling.mp4");
+        let _ = std::fs::remove_file(&dangling);
+        std::os::unix::fs::symlink("nope.mp4", &dangling).unwrap();
+        assert!(out_exists(&dangling));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
