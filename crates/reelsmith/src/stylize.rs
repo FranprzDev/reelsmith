@@ -398,6 +398,44 @@ mod tests {
         assert_eq!(p.fps, 10.0);
     }
 
+    fn reference_dither_frame(src: &[u8], w: usize, h: usize, block: usize, color: bool, out: &mut Vec<u8>) {
+        out.clear();
+        out.resize(w * h * 4, 0);
+        for by in 0..(h + block - 1) / block {
+            for bx in 0..(w + block - 1) / block {
+                let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
+                let mut n = 0u64;
+                for y in by * block..((by + 1) * block).min(h) {
+                    for x in bx * block..((bx + 1) * block).min(w) {
+                        let i = (y * w + x) * 4;
+                        r += src[i] as u64;
+                        g += src[i + 1] as u64;
+                        b += src[i + 2] as u64;
+                        n += 1;
+                    }
+                }
+                let (r, g, b) = ((r / n) as f64, (g / n) as f64, (b / n) as f64);
+                for y in by * block..((by + 1) * block).min(h) {
+                    for x in bx * block..((bx + 1) * block).min(w) {
+                        let t = (BAYER8[y % 8][x % 8] as f64 + 0.5) / 64.0 * 255.0;
+                        let i = (y * w + x) * 4;
+                        if color {
+                            out[i] = if r > t { 255 } else { 0 };
+                            out[i + 1] = if g > t { 255 } else { 0 };
+                            out[i + 2] = if b > t { 255 } else { 0 };
+                        } else {
+                            let v = if 0.2126 * r + 0.7152 * g + 0.0722 * b > t { 255 } else { 0 };
+                            out[i] = v;
+                            out[i + 1] = v;
+                            out[i + 2] = v;
+                        }
+                        out[i + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn dither_matches_reference() {
         for (w, h, block, color) in [(10usize, 12usize, 3usize, true), (7, 9, 1, false), (16, 16, 4, true), (5, 5, 2, false), (1, 1, 1, true), (360, 640, 4, true), (13, 17, 7, false)] {
@@ -408,41 +446,9 @@ mod tests {
             let mut out = Vec::new();
             dither_frame(&src, w, h, block, color, &mut out);
 
-            let mut refout = vec![0u8; w * h * 4];
-            for by in 0..(h + block - 1) / block {
-                for bx in 0..(w + block - 1) / block {
-                    let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
-                    let mut n = 0u64;
-                    for y in by * block..((by + 1) * block).min(h) {
-                        for x in bx * block..((bx + 1) * block).min(w) {
-                            let i = (y * w + x) * 4;
-                            r += src[i] as u64;
-                            g += src[i + 1] as u64;
-                            b += src[i + 2] as u64;
-                            n += 1;
-                        }
-                    }
-                    let (r, g, b) = ((r / n) as f64, (g / n) as f64, (b / n) as f64);
-                    for y in by * block..((by + 1) * block).min(h) {
-                        for x in bx * block..((bx + 1) * block).min(w) {
-                            let t = (BAYER8[y % 8][x % 8] as f64 + 0.5) / 64.0 * 255.0;
-                            let i = (y * w + x) * 4;
-                            if color {
-                                refout[i] = if r > t { 255 } else { 0 };
-                                refout[i + 1] = if g > t { 255 } else { 0 };
-                                refout[i + 2] = if b > t { 255 } else { 0 };
-                            } else {
-                                let v = if 0.2126 * r + 0.7152 * g + 0.0722 * b > t { 255 } else { 0 };
-                                refout[i] = v;
-                                refout[i + 1] = v;
-                                refout[i + 2] = v;
-                            }
-                            refout[i + 3] = 255;
-                        }
-                    }
-                }
-            }
-            assert_eq!(out, refout, "mismatch w={w} h={h} block={block} color={color}");
+            let mut expected = Vec::new();
+            reference_dither_frame(&src, w, h, block, color, &mut expected);
+            assert_eq!(out, expected, "mismatch w={w} h={h} block={block} color={color}");
         }
     }
 
@@ -452,11 +458,30 @@ mod tests {
         let w = 360usize;
         let h = 640usize;
         let src = vec![128u8; w * h * 4];
-        let start = std::time::Instant::now();
-        for _ in 0..30 {
-            let mut out = Vec::new();
-            dither_frame(&src, w, h, 4, true, &mut out);
+        let mut old_samples = Vec::new();
+        let mut new_samples = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            for _ in 0..30 {
+                let mut out = Vec::new();
+                reference_dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                std::hint::black_box(&out);
+            }
+            old_samples.push(start.elapsed());
+
+            let start = std::time::Instant::now();
+            for _ in 0..30 {
+                let mut out = Vec::new();
+                dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                std::hint::black_box(&out);
+            }
+            new_samples.push(start.elapsed());
         }
-        println!("dither 30 frames 360x640: {:?}", start.elapsed());
+        old_samples.sort();
+        new_samples.sort();
+        let old_median = old_samples[2];
+        let new_median = new_samples[2];
+        println!("old median (reference): {:?}", old_median);
+        println!("new median (dither_frame): {:?}", new_median);
     }
 }
