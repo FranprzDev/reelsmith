@@ -22,7 +22,32 @@ pub fn mixc(a: Rgb, b: Rgb, k: f64) -> Rgb {
     [0, 1, 2].map(|i| (a[i] as f64 + (b[i] as f64 - a[i] as f64) * k).round().clamp(0.0, 255.0) as u8)
 }
 pub fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    let mut out = String::new();
+    let mut last = 0usize;
+    let mut escaped = false;
+    for (i, b) in s.bytes().enumerate() {
+        let ent = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            _ => continue,
+        };
+        if !escaped {
+            out.reserve(s.len() + 16);
+            escaped = true;
+        }
+        out.push_str(&s[last..i]);
+        out.push_str(ent);
+        last = i + 1;
+    }
+    if !escaped {
+        // no-escape fast path: one copy
+        return s.to_owned();
+    }
+    if last < s.len() {
+        out.push_str(&s[last..]);
+    }
+    out
 }
 /// opacity rounded to 3 decimals (keeps the SVG text short and stable)
 pub fn op(x: f64) -> f64 {
@@ -203,6 +228,64 @@ pub fn defs(w: f64, h: f64) -> String {
     }
     d.push_str("</radialGradient></defs>");
     d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn esc_old(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    #[test]
+    fn esc_old_chain_correctness() {
+        let cases = [
+            "",
+            "abc",
+            "a&b",
+            "<x>",
+            "a>b<c",
+            "no special",
+            "&&&",
+            "mixed 1<2&3>4",
+            "unicode: café & <b>",
+            "trail&",
+            "&lead",
+        ];
+        for c in cases {
+            assert_eq!(esc(c), esc_old(c), "mismatch for {c:?}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn median5_bench_200000_calls() {
+        use std::time::Instant;
+        let input = "a&b<c>d&e<f>g&h<i>j";
+        let mut times_new = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let start = Instant::now();
+            for _ in 0..200_000usize {
+                std::hint::black_box(esc(std::hint::black_box(input)));
+            }
+            times_new.push(start.elapsed());
+        }
+        times_new.sort();
+        let med_new = times_new[2];
+        let mut times_old = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let start = Instant::now();
+            for _ in 0..200_000usize {
+                std::hint::black_box(esc_old(std::hint::black_box(input)));
+            }
+            times_old.push(start.elapsed());
+        }
+        times_old.sort();
+        let med_old = times_old[2];
+        println!("esc_new median5 200000 calls: {:?}", med_new);
+        println!("esc_old median5 200000 calls: {:?}", med_old);
+    }
 }
 
 /// left-to-right darkening behind the text column: darkness(x) = clip(1 - (x/0.54)^4) * 0.94 * k
