@@ -20,7 +20,8 @@ pub fn boom(sc: &mut Score, dur: f64, f0: f64, f1: f64, dec: f64, drive: f64) ->
     let ph = phase_of(sc, t.iter().map(|x| f1 + (f0 - f1) * (-x * 9.0).exp()));
     let n = sc.noise(t.len());
     let click = dsp::filt(&n, 2, Kind::Low(2500.0), sc.sr);
-    t.iter().enumerate().map(|(i, x)| ((drive * (ph[i].sin() * (-x * dec).exp() + click[i] * (-x * 60.0).exp() * 0.5)).tanh()) / drive.tanh()).collect()
+    let drive_tanh = drive.tanh();
+    t.iter().enumerate().map(|(i, x)| ((drive * (ph[i].sin() * (-x * dec).exp() + click[i] * (-x * 60.0).exp() * 0.5)).tanh()) / drive_tanh).collect()
 }
 
 pub fn taiko(sc: &mut Score, g: f64, f0: f64, f1: f64) -> Vec<f64> {
@@ -174,4 +175,58 @@ pub fn choir(sc: &mut Score, midis: &[f64], dur: f64, att: f64, rel: f64) -> Vec
     }
     let norm = (midis.len() * 2) as f64;
     t.iter().enumerate().map(|(i, x)| s[i] * (x / att).min(1.0) * ((dur + rel - x) / rel).clamp(0.0, 1.0) / norm).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_bits_eq(a: &[f64], b: &[f64], what: &str) {
+        assert_eq!(a.len(), b.len(), "{what} length");
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "{what}[{i}]: {x:?} vs {y:?}");
+        }
+    }
+
+    fn reference_boom(sc: &mut Score, dur: f64, f0: f64, f1: f64, dec: f64, drive: f64) -> Vec<f64> {
+        let t = tt(sc, dur);
+        let ph = phase_of(sc, t.iter().map(|x| f1 + (f0 - f1) * (-x * 9.0).exp()));
+        let n = sc.noise(t.len());
+        let click = dsp::filt(&n, 2, Kind::Low(2500.0), sc.sr);
+        t.iter().enumerate().map(|(i, x)| ((drive * (ph[i].sin() * (-x * dec).exp() + click[i] * (-x * 60.0).exp() * 0.5)).tanh()) / drive.tanh()).collect()
+    }
+
+    #[test]
+    fn boom_matches_reference_bits() {
+        let mut a = Score::new(48000, 4.0, 42);
+        let mut b = Score::new(48000, 4.0, 42);
+        let ra = reference_boom(&mut a, 0.5, 60.0, 40.0, 3.0, 1.5);
+        let rb = boom(&mut b, 0.5, 60.0, 40.0, 3.0, 1.5);
+        assert_bits_eq(&ra, &rb, "boom");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_boom() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let reps = 50;
+        let t0 = Instant::now();
+        let mut a = 0.0;
+        for _ in 0..reps {
+            let mut sc = Score::new(48000, 4.0, 42);
+            a += black_box(reference_boom(&mut sc, 0.5, 60.0, 40.0, 3.0, 1.5))[0];
+        }
+        let tr = t0.elapsed();
+        let t1 = Instant::now();
+        let mut b = 0.0;
+        for _ in 0..reps {
+            let mut sc = Score::new(48000, 4.0, 42);
+            b += black_box(boom(&mut sc, 0.5, 60.0, 40.0, 3.0, 1.5))[0];
+        }
+        let tc = t1.elapsed();
+        assert_eq!(a.to_bits(), b.to_bits());
+        eprintln!("boom: reference {tr:?}, candidate {tc:?}");
+    }
+
 }
