@@ -143,8 +143,14 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
         None => rep.md.push_str("- captions are off (not burned in): no text-size check\n"),
     }
     if min_cap.is_some() {
-        for (i, c) in p.captions.iter().enumerate() {
-            media::frame_at(video, (c.t0 + 0.3).min(c.t1 - frame).max(c.t0), &dir.join(format!("cap_{i:02}.jpg")), 240)?;
+        let requests: Vec<(f64, std::path::PathBuf)> =
+            p.captions.iter().enumerate().map(|(i, c)| ((c.t0 + 0.3).min(c.t1 - frame).max(c.t0), dir.join(format!("cap_{i:02}.jpg")))).collect();
+        if single_video_stream(&streams) {
+            media::frames_at(video, &requests, 240)?;
+        } else {
+            for (t, out) in &requests {
+                media::frame_at(video, *t, out, 240)?;
+            }
         }
     }
     rep.save(&dir)?;
@@ -164,4 +170,26 @@ pub fn run(p: &Plan, r: Res, video: &Path) -> Result<QaSummary> {
         contact_sheet: sheet.display().to_string(),
     };
     Ok(s)
+}
+
+fn single_video_stream(streams: &[Value]) -> bool {
+    streams.iter().filter(|s| s["codec_type"] == "video").count() == 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn single_video_stream_one_video() {
+        let streams = vec![json!({"codec_type": "video"}), json!({"codec_type": "audio"})];
+        assert!(single_video_stream(&streams));
+    }
+
+    #[test]
+    fn single_video_stream_two_videos() {
+        let streams = vec![json!({"codec_type": "video"}), json!({"codec_type": "video"}), json!({"codec_type": "audio"})];
+        assert!(!single_video_stream(&streams));
+    }
 }
