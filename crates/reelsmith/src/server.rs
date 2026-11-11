@@ -202,17 +202,17 @@ impl Reelsmith {
         Ok(Json(blocking(move || stylize::stylize(&a)).await?))
     }
 
-    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed (optional direction/key/bpm and energy per beat), captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering).")]
+    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed (procedural, file, optional sampled soundfont with local path and acoustic/cinematic/funk palette, optional direction/key/bpm and energy per beat), captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering). The SoundFont bank is user-supplied and never bundled.")]
     async fn create_project(&self, Parameters(a): Parameters<CreateProjectArgs>) -> Result<Json<ProjectCreated>, String> {
         Ok(Json(blocking(move || brief::create_project(&a)).await?))
     }
 
-    #[tool(description = "Write the project's brief.toml from beats (text + clip names + optional overlay and music energy) and an optional end card, then resolve it: returns the config path to render, the timeline summary and any missing input files, each clip / motion asset with the closest existing names in its folder (fix a typo and write the brief again). Supports procedural music direction (calm/uplifting/tense), bpm and key overrides.")]
+    #[tool(description = "Write the project's brief.toml from beats (text + clip names + optional overlay and music energy) and an optional end card, then resolve it: returns the config path to render, the timeline summary and any missing input files, each clip / motion asset with the closest existing names in its folder (fix a typo and write the brief again). Supports music direction (calm/uplifting/tense), bpm, key, and optional sampled soundfont path/palette overrides.")]
     async fn write_brief(&self, Parameters(a): Parameters<WriteBriefArgs>) -> Result<Json<BriefWritten>, String> {
         Ok(Json(blocking(move || brief::write_brief(&a)).await?))
     }
 
-    #[tool(description = "Render a config: plates, procedural/external music mastered to -14 LUFS, chunked fframes render, mux, SRT and QA. resolution: preview (360p), draft (720p) or final (1080p, only after the draft is approved). draft and final require a completed preview of the same config and inputs first. Returns the output MP4 and the QA report when done, or a running job_id to poll with get_status.")]
+    #[tool(description = "Render a config: plates, procedural/file/sampled SoundFont music mastered to -14 LUFS, chunked fframes render, mux, SRT and QA. resolution: preview (360p), draft (720p) or final (1080p, only after the draft is approved). draft and final require a completed preview of the same config and inputs first. Returns the output MP4 and the QA report when done, or a running job_id to poll with get_status.")]
     async fn render(&self, Parameters(a): Parameters<RenderArgs>) -> Result<Json<JobStatus>, String> {
         clips::ensure_ffmpeg().map_err(|e| format!("{e:#}"))?;
         let config = if a.config.is_absolute() { a.config.clone() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(&a.config) };

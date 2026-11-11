@@ -323,8 +323,8 @@ impl Plan {
         if music.key.is_some() && music.direction.is_none() {
             return Err(cerr("music.key requires music.direction (otherwise it is ignored)".into()));
         }
-        if music.direction.is_some() && music.kind != MusicKind::Procedural {
-            return Err(cerr("music.direction only applies when music.kind = \"procedural\"".into()));
+        if music.direction.is_some() && music.kind != MusicKind::Procedural && music.kind != MusicKind::Soundfont {
+            return Err(cerr("music.direction only applies when music.kind = \"procedural\" or \"soundfont\"".into()));
         }
         if music.key.is_some() && music.progression.is_some() {
             return Err(cerr("music.key is ignored when music.progression is set explicitly".into()));
@@ -344,6 +344,7 @@ impl Plan {
             music.progression = Some(crate::config::default_music_progression());
         }
         music.file = music.file.as_deref().map(|p| abs(p).display().to_string());
+        music.soundfont = music.soundfont.as_deref().map(|p| abs(p).display().to_string());
         let mut caption_style = f.captions.clone();
         caption_style.words.clear();
         let plan = Plan {
@@ -434,8 +435,66 @@ impl Plan {
         if self.music.kind == MusicKind::File && self.music.file.is_none() {
             return Err(cerr("music.kind = \"file\" needs music.file".into()));
         }
+        if self.music.kind == MusicKind::Soundfont && self.music.soundfont.is_none() {
+            return Err(cerr("music.kind = \"soundfont\" needs music.soundfont".into()));
+        }
+        if self.music.kind == MusicKind::Soundfont && self.music.soundfont_style.is_none() {
+            return Err(cerr("music.kind = \"soundfont\" needs music.soundfont_style".into()));
+        }
         if self.music.kind == MusicKind::Procedural && self.music.progression.as_ref().map_or(true, Vec::is_empty) {
             return Err(cerr("music.kind = \"procedural\" needs a non-empty music.progression".into()));
+        }
+        if self.music.kind == MusicKind::Soundfont && self.music.progression.as_ref().map_or(true, Vec::is_empty) {
+            return Err(cerr("music.kind = \"soundfont\" needs a non-empty music.progression".into()));
+        }
+        if self.music.kind == MusicKind::Soundfont {
+            if let Some(prog) = &self.music.progression {
+                let style = self.music.soundfont_style;
+                for (root, triad) in prog {
+                    if !root.is_finite() || root.fract() != 0.0 {
+                        return Err(cerr(format!("soundfont progression root {root} must be a finite integer MIDI note")));
+                    }
+                    for n in triad {
+                        if !n.is_finite() || n.fract() != 0.0 {
+                            return Err(cerr(format!("soundfont progression note {n} must be a finite integer MIDI note")));
+                        }
+                    }
+                    match style {
+                        Some(crate::config::SoundfontStyle::Acoustic) => {
+                            for n in triad {
+                                if *n > 115.0 {
+                                    return Err(cerr(format!("soundfont acoustic progression note {n} must be <= 115 so its +12 voice stays in range")));
+                                }
+                            }
+                        }
+                        Some(crate::config::SoundfontStyle::Cinematic) => {
+                            if *root < 12.0 {
+                                return Err(cerr(format!("soundfont cinematic progression root {root} must be >= 12 so its -12 voice stays in range")));
+                            }
+                            for n in triad {
+                                if *n > 115.0 {
+                                    return Err(cerr(format!("soundfont cinematic progression note {n} must be <= 115 so its +12 voice stays in range")));
+                                }
+                            }
+                        }
+                        Some(crate::config::SoundfontStyle::Funk) => {
+                            if triad[0] < 5.0 {
+                                return Err(cerr(format!("soundfont funk progression note {} must be >= 5", triad[0])));
+                            }
+                            if triad[0] + 7.0 > 127.0 {
+                                return Err(cerr(format!("soundfont funk progression note {} must be <= 120", triad[0])));
+                            }
+                            if *root + 7.0 > 127.0 {
+                                return Err(cerr(format!("soundfont funk progression root {root} must be <= 120")));
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+        if self.music.kind != MusicKind::Soundfont && (self.music.soundfont.is_some() || self.music.soundfont_style.is_some()) {
+            return Err(cerr("music.soundfont / music.soundfont_style only apply when music.kind = \"soundfont\"".into()));
         }
         if let Some(bpm) = self.music.bpm {
             if !bpm.is_finite() || !(1.0..=300.0).contains(&bpm) {
@@ -445,8 +504,8 @@ impl Plan {
         if self.music.direction.is_none() && self.music.key.is_some() {
             return Err(cerr("music.key requires music.direction (otherwise it is ignored)".into()));
         }
-        if self.music.direction.is_some() && self.music.kind != MusicKind::Procedural {
-            return Err(cerr("music.direction only applies when music.kind = \"procedural\"".into()));
+        if self.music.direction.is_some() && self.music.kind != MusicKind::Procedural && self.music.kind != MusicKind::Soundfont {
+            return Err(cerr("music.direction only applies when music.kind = \"procedural\" or \"soundfont\"".into()));
         }
         if let Some(key) = self.music.key {
             if !key.is_finite() || key.fract() != 0.0 || !(36.0..=72.0).contains(&key) {
@@ -513,6 +572,11 @@ impl Plan {
         if let (MusicKind::File, Some(m)) = (self.music.kind, &self.music.file) {
             if !Path::new(m).is_file() {
                 v.push(format!("music {m}"));
+            }
+        }
+        if let (MusicKind::Soundfont, Some(m)) = (self.music.kind, &self.music.soundfont) {
+            if !Path::new(m).is_file() {
+                v.push(format!("music soundfont {m}"));
             }
         }
         v.sort();
@@ -679,6 +743,31 @@ dur = 1.0
         assert!(resolve_str(&cfg).is_err());
         let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\nbpm = 500\n");
         assert!(resolve_str(&cfg).is_err());
+    }
+
+    #[test]
+    fn soundfont_requires_fields() {
+        let cfg = format!("{SHOT}\n[music]\nkind = \"soundfont\"\n");
+        assert!(resolve_str(&cfg).is_err());
+        let cfg = format!("{SHOT}\n[music]\nkind = \"soundfont\"\nsoundfont = \"/tmp/x.sf2\"\n");
+        assert!(resolve_str(&cfg).is_err());
+        let cfg = format!("{SHOT}\n[music]\nkind = \"soundfont\"\nsoundfont_style = \"acoustic\"\n");
+        assert!(resolve_str(&cfg).is_err());
+    }
+
+    #[test]
+    fn soundfont_fields_rejected_on_other_kinds() {
+        let cfg = format!("{SHOT}\n[music]\nkind = \"procedural\"\nsoundfont = \"/tmp/x.sf2\"\nsoundfont_style = \"acoustic\"\n");
+        assert!(resolve_str(&cfg).is_err());
+    }
+
+    #[test]
+    fn soundfont_allows_direction() {
+        let cfg = format!("{SHOT}\n[music]\nkind = \"soundfont\"\nsoundfont = \"/tmp/x.sf2\"\nsoundfont_style = \"acoustic\"\ndirection = \"calm\"\n");
+        // path missing is fine at plan time; resolve may fail missing file only in missing_inputs, not plan
+        let r = resolve_str(&cfg);
+        // plan resolution does not check file existence
+        assert!(r.is_ok());
     }
 
     #[test]

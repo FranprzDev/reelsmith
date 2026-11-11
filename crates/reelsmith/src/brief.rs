@@ -4,7 +4,7 @@
 //! * `brief.toml`, one ad: its beats (text + clips + optional overlay) and end card. It `extends = "promo.toml"`, so
 //!   the template resolves both into one timeline exactly as the `promo` CLI does.
 use anyhow::{Context, Result, bail};
-use promo::config::{Aspect, CueKind, Engine, MusicDirection, MusicKind};
+use promo::config::{Aspect, CueKind, Engine, MusicDirection, MusicKind, SoundfontStyle};
 use promo::pipeline::{self, PlanSummary};
 use promo::{Overrides, Plan, Res};
 use schemars::JsonSchema;
@@ -28,19 +28,25 @@ pub struct CreateProjectArgs {
     /// canvas shape: "9:16" (Reels/TikTok/Shorts), "16:9" (YouTube) or "1:1"
     #[serde(default)]
     pub aspect: Aspect,
-    /// music bed: "procedural" (built-in, no samples), "file" (your own track in `music_file`) or "none"
+    /// music bed: "procedural" (built-in, no samples), "file" (your own track in `music_file`), "soundfont" (local SF2 bank in `music_soundfont`) or "none"
     #[serde(default)]
     pub music: MusicKind,
     /// tempo of the procedural bed (default 128)
     pub bpm: Option<f64>,
     /// audio file for `music = "file"`
     pub music_file: Option<PathBuf>,
-    /// optional procedural music direction (mood): "calm", "uplifting" or "tense"
+    /// optional music direction for procedural or sampled beds (mood): "calm", "uplifting" or "tense"
     #[serde(default, alias = "mood", alias = "music_mood", alias = "direction")]
     pub music_direction: Option<MusicDirection>,
-    /// root note for directed procedural music (MIDI note, 0..=127)
+    /// root note for directed music (MIDI note, 36..=72)
     #[serde(default, alias = "key_midi", alias = "root", alias = "root_midi")]
     pub music_key: Option<f64>,
+    /// local SF2 bank for `music = "soundfont"`
+    #[serde(default, alias = "soundfont_path")]
+    pub music_soundfont: Option<PathBuf>,
+    /// instrument palette for `music = "soundfont"`: "acoustic", "cinematic" or "funk"
+    #[serde(default, alias = "soundfont_style", alias = "music_style")]
+    pub music_soundfont_style: Option<SoundfontStyle>,
     /// burn the captions into the picture (default false: the texts only set the timing and go to an SRT sidecar)
     #[serde(default)]
     pub captions_burned_in: bool,
@@ -134,15 +140,21 @@ pub struct WriteBriefArgs {
     pub project_dir: PathBuf,
     /// output name: files are `out/<name>_<preview|draft|final>_<w>x<h>.mp4`
     pub name: String,
-    /// optional procedural music direction for this brief (overrides the project style)
+    /// optional music direction for procedural or sampled beds (overrides the project style)
     #[serde(default, alias = "mood", alias = "music_mood", alias = "direction")]
     pub music_direction: Option<MusicDirection>,
-    /// tempo for directed procedural music (overrides the project style)
+    /// tempo for directed music (overrides the project style)
     #[serde(default)]
     pub music_bpm: Option<f64>,
-    /// root note for directed procedural music (MIDI note, 0..=127)
+    /// root note for directed music (MIDI note, 36..=72)
     #[serde(default, alias = "key_midi", alias = "root", alias = "root_midi")]
     pub music_key: Option<f64>,
+    /// local SF2 bank for `music.kind = "soundfont"` (overrides the project style)
+    #[serde(default, alias = "soundfont_path")]
+    pub music_soundfont: Option<PathBuf>,
+    /// instrument palette for `music.kind = "soundfont"` (overrides the project style)
+    #[serde(default, alias = "soundfont_style", alias = "music_style")]
+    pub music_soundfont_style: Option<SoundfontStyle>,
     /// one beat per idea, in order
     pub beats: Vec<BeatArg>,
     pub end_card: Option<EndCardArg>,
@@ -208,6 +220,15 @@ pub fn create_project(a: &CreateProjectArgs) -> Result<ProjectCreated> {
     if a.music == MusicKind::File && a.music_file.is_none() {
         bail!("music = \"file\" needs music_file");
     }
+    if a.music == MusicKind::Soundfont && a.music_soundfont.is_none() {
+        bail!("music = \"soundfont\" needs music_soundfont");
+    }
+    if a.music == MusicKind::Soundfont && a.music_soundfont_style.is_none() {
+        bail!("music = \"soundfont\" needs music_soundfont_style");
+    }
+    if a.music != MusicKind::Soundfont && (a.music_soundfont.is_some() || a.music_soundfont_style.is_some()) {
+        bail!("music_soundfont / music_soundfont_style only apply when music = \"soundfont\"");
+    }
     if let Some(bpm) = a.bpm {
         anyhow::ensure!(bpm.is_finite() && (1.0..=300.0).contains(&bpm), "bpm must be between 1 and 300");
     }
@@ -236,6 +257,8 @@ pub fn create_project(a: &CreateProjectArgs) -> Result<ProjectCreated> {
                 ("key", num(a.music_key)),
                 ("bpm", num(a.bpm)),
                 ("file", a.music_file.as_deref().map(absolute).transpose()?.as_deref().map(path_str)),
+                ("soundfont", a.music_soundfont.as_deref().map(absolute).transpose()?.as_deref().map(path_str)),
+                ("soundfont_style", a.music_soundfont_style.as_ref().map(enum_str).transpose()?),
             ])),
         ),
     ]);
@@ -349,11 +372,13 @@ pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
             ("energy", num(e.music_energy)),
         ])
     });
-    let music = if a.music_direction.is_some() || a.music_bpm.is_some() || a.music_key.is_some() {
+    let music = if a.music_direction.is_some() || a.music_bpm.is_some() || a.music_key.is_some() || a.music_soundfont.is_some() || a.music_soundfont_style.is_some() {
         Some(table(vec![
             ("direction", a.music_direction.as_ref().map(enum_str).transpose()?),
             ("bpm", num(a.music_bpm)),
             ("key", num(a.music_key)),
+            ("soundfont", a.music_soundfont.as_deref().map(absolute).transpose()?.as_deref().map(path_str)),
+            ("soundfont_style", a.music_soundfont_style.as_ref().map(enum_str).transpose()?),
         ]))
     } else {
         None

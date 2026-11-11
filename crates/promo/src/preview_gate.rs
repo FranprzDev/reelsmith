@@ -67,6 +67,9 @@ pub fn fingerprint(p: &Plan) -> Result<String> {
     if let (MusicKind::File, Some(m)) = (p.music.kind, &p.music.file) {
         inputs.push(PathBuf::from(m));
     }
+    if let (MusicKind::Soundfont, Some(m)) = (p.music.kind, &p.music.soundfont) {
+        inputs.push(PathBuf::from(m));
+    }
     inputs.sort();
     inputs.dedup();
     for f in inputs {
