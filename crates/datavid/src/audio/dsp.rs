@@ -4,6 +4,7 @@
 use num_complex::Complex64 as C;
 use rustfft::FftPlanner;
 use std::f64::consts::PI;
+use std::sync::OnceLock;
 
 pub type Sos = Vec<[f64; 6]>;
 
@@ -158,19 +159,31 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 /// low-pass FIR for factor-`up` interpolation (scipy resample_poly: half_len = 10*up, Kaiser beta 5)
-fn interp_fir(up: usize) -> Vec<f64> {
+fn interp_fir_uncached(up: usize) -> Vec<f64> {
     let half = 10 * up;
     let n = 2 * half + 1;
     let fc = 1.0 / up as f64;
     let beta = 5.0;
+    let i0_beta = bessel_i0(beta);
     (0..n)
         .map(|i| {
             let m = i as f64 - half as f64;
             let sinc = if m == 0.0 { 1.0 } else { (PI * fc * m).sin() / (PI * fc * m) };
-            let w = bessel_i0(beta * (1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).powi(2)).sqrt()) / bessel_i0(beta);
+            let w = bessel_i0(beta * (1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).powi(2)).sqrt()) / i0_beta;
             fc * sinc * w * up as f64
         })
         .collect()
+}
+
+static FIR_UP_4: OnceLock<Vec<f64>> = OnceLock::new();
+static FIR_DOWN_4: OnceLock<Vec<f64>> = OnceLock::new();
+
+fn interp_fir(up: usize) -> Vec<f64> {
+    if up == 4 {
+        FIR_UP_4.get_or_init(|| interp_fir_uncached(4)).clone()
+    } else {
+        interp_fir_uncached(up)
+    }
 }
 
 /// upsample by `up` (zero-stuff + FIR), output length x.len() * up, delay-compensated
@@ -202,7 +215,11 @@ pub fn upsample(x: &[f64], up: usize) -> Vec<f64> {
 
 /// decimate by `down` after the same anti-alias FIR
 pub fn downsample(x: &[f64], down: usize) -> Vec<f64> {
-    let h: Vec<f64> = interp_fir(down).iter().map(|v| v / down as f64).collect();
+    let h: Vec<f64> = if down == 4 {
+        FIR_DOWN_4.get_or_init(|| interp_fir_uncached(4).iter().map(|v| v / 4.0).collect()).clone()
+    } else {
+        interp_fir_uncached(down).iter().map(|v| v / down as f64).collect()
+    };
     let half = h.len() / 2;
     let n = x.len() / down;
     (0..n)
@@ -223,6 +240,131 @@ pub fn downsample(x: &[f64], down: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reference_interp_fir(up: usize) -> Vec<f64> {
+        let half = 10 * up;
+        let n = 2 * half + 1;
+        let fc = 1.0 / up as f64;
+        let beta = 5.0;
+        (0..n)
+            .map(|i| {
+                let m = i as f64 - half as f64;
+                let sinc = if m == 0.0 { 1.0 } else { (PI * fc * m).sin() / (PI * fc * m) };
+                let w = bessel_i0(beta * (1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).powi(2)).sqrt()) / bessel_i0(beta);
+                fc * sinc * w * up as f64
+            })
+            .collect()
+    }
+
+    fn reference_upsample(x: &[f64], up: usize) -> Vec<f64> {
+        let h = reference_interp_fir(up);
+        let half = h.len() / 2;
+        let n = x.len() * up;
+        let mut out = vec![0.0; n];
+        for (j, o) in out.iter_mut().enumerate() {
+            let jj = j + half;
+            let kmax = jj / up;
+            let mut s = 0.0;
+            let mut k = kmax as isize;
+            while k >= 0 {
+                let idx = jj as isize - k * up as isize;
+                if idx as usize >= h.len() {
+                    break;
+                }
+                if (k as usize) < x.len() {
+                    s += x[k as usize] * h[idx as usize];
+                }
+                k -= 1;
+            }
+            *o = s;
+        }
+        out
+    }
+
+    fn reference_downsample(x: &[f64], down: usize) -> Vec<f64> {
+        let h: Vec<f64> = reference_interp_fir(down).iter().map(|v| v / down as f64).collect();
+        let half = h.len() / 2;
+        let n = x.len() / down;
+        (0..n)
+            .map(|i| {
+                let c = i * down;
+                let mut s = 0.0;
+                for (k, hv) in h.iter().enumerate() {
+                    let idx = c as isize + k as isize - half as isize;
+                    if idx >= 0 && (idx as usize) < x.len() {
+                        s += x[idx as usize] * hv;
+                    }
+                }
+                s
+            })
+            .collect()
+    }
+
+    fn reference_fftconvolve(x: &[f64], h: &[f64]) -> Vec<f64> {
+        let n = x.len();
+        let m = h.len();
+        let mut size = 1;
+        while size < 2 * m {
+            size <<= 1;
+        }
+        size = size.max(1 << 16);
+        let block = size - m + 1;
+        let mut planner = FftPlanner::<f64>::new();
+        let fwd = planner.plan_fft_forward(size);
+        let inv = planner.plan_fft_inverse(size);
+        let mut hf: Vec<rustfft::num_complex::Complex<f64>> = (0..size).map(|i| rustfft::num_complex::Complex::new(if i < m { h[i] } else { 0.0 }, 0.0)).collect();
+        fwd.process(&mut hf);
+        let mut out = vec![0.0; n + size];
+        let mut buf = vec![rustfft::num_complex::Complex::new(0.0, 0.0); size];
+        let mut a = 0;
+        while a < n {
+            let b = (a + block).min(n);
+            for (i, v) in buf.iter_mut().enumerate() {
+                *v = rustfft::num_complex::Complex::new(if i < b - a { x[a + i] } else { 0.0 }, 0.0);
+            }
+            fwd.process(&mut buf);
+            for (v, hv) in buf.iter_mut().zip(hf.iter()) {
+                *v *= hv;
+            }
+            inv.process(&mut buf);
+            for i in 0..size {
+                out[a + i] += buf[i].re / size as f64;
+            }
+            a = b;
+        }
+        out.truncate(n);
+        out
+    }
+
+    fn signal(kind: &str, n: usize, seed: u64) -> Vec<f64> {
+        match kind {
+            "zeros" => vec![0.0; n],
+            "impulse" => {
+                let mut v = vec![0.0; n];
+                if n > 0 {
+                    v[0] = 1.0;
+                }
+                v
+            }
+            _ => {
+                let mut s = seed;
+                (0..n)
+                    .map(|_| {
+                        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    fn assert_bits_eq(a: &[f64], b: &[f64], what: &str) {
+        assert_eq!(a.len(), b.len(), "{what} length");
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "{what}[{i}]: {x:?} vs {y:?}");
+        }
+    }
+
     #[test]
     fn lowpass_matches_scipy() {
         // scipy.signal.butter(2, 1000, fs=48000, output="sos")
@@ -232,10 +374,149 @@ mod tests {
             assert!((s[0][i] - r[i]).abs() < 1e-9, "{i}: {} vs {}", s[0][i], r[i]);
         }
     }
+
     #[test]
     fn upsample_dc() {
         let x = vec![1.0; 400];
         let y = upsample(&x, 4);
         assert!((y[800] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn interp_fir_matches_reference_bits() {
+        for up in [1, 2, 3, 4, 5, 8] {
+            let a = interp_fir(up);
+            let b = reference_interp_fir(up);
+            assert_bits_eq(&a, &b, &format!("interp_fir({up})"));
+        }
+        assert_bits_eq(&interp_fir(4), &interp_fir(4), "cached interp_fir(4)");
+    }
+
+    #[test]
+    fn upsample_matches_reference_bits() {
+        for up in [1, 2, 3, 4, 5] {
+            for n in [0, 1, 2, 3, 4, 5, 7, 64] {
+                for kind in ["zeros", "impulse", "random"] {
+                    let x = signal(kind, n, 7 + n as u64 + up as u64);
+                    let a = upsample(&x, up);
+                    let b = reference_upsample(&x, up);
+                    assert_bits_eq(&a, &b, &format!("upsample {kind} n={n} up={up}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn downsample_matches_reference_bits() {
+        for down in [1, 2, 3, 4, 5] {
+            for n in [0, 1, 2, 3, 4, 5, 8, 64, 65] {
+                for kind in ["zeros", "impulse", "random"] {
+                    let x = signal(kind, n, 13 + n as u64 + down as u64);
+                    let a = downsample(&x, down);
+                    let b = reference_downsample(&x, down);
+                    assert_bits_eq(&a, &b, &format!("downsample {kind} n={n} down={down}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fftconvolve_matches_reference_bits() {
+        for n in [0, 1, 2, 3, 4, 17, 1024] {
+            for m in [1, 2, 3, 4, 17, 64] {
+                for kind in ["zeros", "impulse", "random"] {
+                    let x = signal(kind, n, 21 + n as u64 + m as u64);
+                    let h = signal("random", m, 99 + m as u64);
+                    let a = fftconvolve(&x, &h);
+                    let b = reference_fftconvolve(&x, &h);
+                    assert_bits_eq(&a, &b, &format!("fftconvolve x={kind} n={n} m={m}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_interp_fir() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let reps = 20_000;
+        let t0 = Instant::now();
+        let mut a = 0.0;
+        for _ in 0..reps {
+            a += black_box(reference_interp_fir(4))[40];
+        }
+        let tr = t0.elapsed();
+        let t1 = Instant::now();
+        let mut b = 0.0;
+        for _ in 0..reps {
+            b += black_box(interp_fir(4))[40];
+        }
+        let tc = t1.elapsed();
+        assert_eq!(a.to_bits(), b.to_bits());
+        eprintln!("interp_fir(4): reference {tr:?}, candidate {tc:?}, equal {a:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_resample_kernels() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 48_000, 3);
+        let reps = 20;
+        let t0 = Instant::now();
+        let mut r_up = vec![];
+        for _ in 0..reps {
+            r_up = black_box(reference_upsample(&x, 4));
+        }
+        let tr_up = t0.elapsed();
+        let t1 = Instant::now();
+        let mut c_up = vec![];
+        for _ in 0..reps {
+            c_up = black_box(upsample(&x, 4));
+        }
+        let tc_up = t1.elapsed();
+        assert_bits_eq(&r_up, &c_up, "bench upsample");
+
+        let ud = upsample(&x, 4);
+        let t2 = Instant::now();
+        let mut r_dn = vec![];
+        for _ in 0..reps {
+            r_dn = black_box(reference_downsample(&ud, 4));
+        }
+        let tr_dn = t2.elapsed();
+        let t3 = Instant::now();
+        let mut c_dn = vec![];
+        for _ in 0..reps {
+            c_dn = black_box(downsample(&ud, 4));
+        }
+        let tc_dn = t3.elapsed();
+        assert_bits_eq(&r_dn, &c_dn, "bench downsample");
+        eprintln!("upsample(4): reference {tr_up:?}, candidate {tc_up:?}");
+        eprintln!("downsample(4): reference {tr_dn:?}, candidate {tc_dn:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_fftconvolve() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 48_000, 5);
+        let h = reference_interp_fir(4);
+        let reps = 50;
+        let t0 = Instant::now();
+        let mut r = vec![];
+        for _ in 0..reps {
+            r = black_box(reference_fftconvolve(&x, &h));
+        }
+        let tr = t0.elapsed();
+        let t1 = Instant::now();
+        let mut c = vec![];
+        for _ in 0..reps {
+            c = black_box(fftconvolve(&x, &h));
+        }
+        let tc = t1.elapsed();
+        assert_bits_eq(&r, &c, "bench fftconvolve");
+        eprintln!("fftconvolve: reference {tr:?}, candidate {tc:?}");
     }
 }
