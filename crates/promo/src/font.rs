@@ -4,6 +4,7 @@ use crate::error::{ConfigError, MissingInput};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct FontInfo {
@@ -13,6 +14,8 @@ pub struct FontInfo {
     advances: HashMap<char, f64>,
     fallback: f64,
     ascii: [f64; 128],
+    /// bounded one-entry cache for the most recently measured caption
+    cache: Arc<Mutex<Option<(String, f64)>>>,
 }
 
 impl FontInfo {
@@ -37,12 +40,27 @@ impl FontInfo {
                 }
             }
         }
-        Ok(Self { family, advances, fallback, ascii })
+        Ok(Self {
+            family,
+            advances,
+            fallback,
+            ascii,
+            cache: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// width of `s` in em
     pub fn width_em(&self, s: &str) -> f64 {
-        s.chars()
+        if let Ok(guard) = self.cache.lock() {
+            if let Some((cached, width)) = guard.as_ref() {
+                if cached == s {
+                    return *width;
+                }
+            }
+        }
+
+        let width = s
+            .chars()
             .map(|c| {
                 let code = c as usize;
                 if code < 128 {
@@ -51,7 +69,12 @@ impl FontInfo {
                     self.advances.get(&c).copied().unwrap_or(self.fallback)
                 }
             })
-            .sum()
+            .sum();
+
+        if let Ok(mut guard) = self.cache.lock() {
+            *guard = Some((s.to_string(), width));
+        }
+        width
     }
 
     /// the caption size: `size`, shrunk so the text fits `max_w` (design px)
@@ -163,5 +186,88 @@ mod tests {
         hashmap.sort();
         eprintln!("font width_em optimized median of 5: {:?}", optimized[2]);
         eprintln!("font width_em hashmap median of 5: {:?}", hashmap[2]);
+    }
+
+    #[test]
+    #[ignore = "benchmark: cargo test -p promo --lib font::tests::bench_width_repeat_cache -- --ignored --nocapture"]
+    fn bench_width_repeat_cache() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let fi = FontInfo::load(&font_path()).unwrap();
+        let caption = "A".repeat(100);
+        let iters = 200_000usize;
+
+        // warm the one-entry cache
+        let _ = fi.width_em(&caption);
+
+        let mut cached = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let start = Instant::now();
+            let mut total = 0.0;
+            for _ in 0..iters {
+                total += black_box(fi.width_em(&caption));
+            }
+            black_box(total);
+            cached.push(start.elapsed());
+        }
+
+        let mut exact = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let start = Instant::now();
+            let mut total = 0.0;
+            for _ in 0..iters {
+                let w: f64 = caption
+                    .chars()
+                    .map(|c| {
+                        let code = c as usize;
+                        if code < 128 {
+                            fi.ascii[code]
+                        } else {
+                            fi.advances.get(&c).copied().unwrap_or(fi.fallback)
+                        }
+                    })
+                    .sum();
+                total += black_box(w);
+            }
+            black_box(total);
+            exact.push(start.elapsed());
+        }
+
+        cached.sort();
+        exact.sort();
+        eprintln!("width_em cached median of 5: {:?}", cached[2]);
+        eprintln!("exact ascii no-mutex median of 5: {:?}", exact[2]);
+    }
+
+    #[test]
+    fn alternating_ascii_unicode_empty_widths_match_hashmap() {
+        let fi = FontInfo::load(&font_path()).unwrap();
+        let texts = ["", "HELLO, WORLD!", "Señor pingüino: acción, ñáéíóú", "0123456789", "😀中", ""];
+        for t in &texts {
+            assert_eq!(fi.width_em(t), hashmap_width(&fi, t));
+        }
+        for _ in 0..10 {
+            for t in &texts {
+                assert_eq!(fi.width_em(t), hashmap_width(&fi, t));
+            }
+        }
+    }
+
+    #[test]
+    fn clone_shares_cache_across_alternating_texts() {
+        let fi = FontInfo::load(&font_path()).unwrap();
+        let cloned = fi.clone();
+        let texts = ["ABC", "Señor", "", "HELLO, WORLD! The quick brown fox"];
+        for t in &texts {
+            assert_eq!(fi.width_em(t), cloned.width_em(t));
+        }
+        for _ in 0..10 {
+            for t in &texts {
+                let a = fi.width_em(t);
+                let b = cloned.width_em(t);
+                assert_eq!(a, b);
+            }
+        }
     }
 }
