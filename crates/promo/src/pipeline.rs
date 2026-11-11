@@ -133,19 +133,31 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
     let out = o.out.clone().unwrap_or_else(|| p.default_out(r));
     match p.engine {
         crate::config::Engine::Fframes => {
-            ev.stage(Stage::Plate, Status::Start);
-            plate::run(&mut p, r, Only::All, o.jobs, &backend, ev)?;
-            p.save()?;
-            ev.stage(Stage::Plate, Status::Done);
-
+            // the mastered mix is only consumed by the mux, so it builds while the plates
+            // and render chunks are produced instead of sitting between them on the critical path
             ev.stage(Stage::Audio, Status::Start);
-            audio::run(&p, ev)?;
-            ev.stage(Stage::Audio, Status::Done);
+            let audio_plan = p.clone();
+            let audio_ev = ev.clone();
+            let audio = std::thread::spawn(move || audio::run(&audio_plan, &audio_ev));
 
-            ev.stage(Stage::Render, Status::Start);
-            let fb = crate::frame::FrameBuilder::new(p.clone())?;
-            render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, &backend, ev)?;
-            ev.stage(Stage::Render, Status::Done);
+            let visual = (|| -> Result<()> {
+                ev.stage(Stage::Plate, Status::Start);
+                plate::run(&mut p, r, Only::All, o.jobs, &backend, ev)?;
+                p.save()?;
+                ev.stage(Stage::Plate, Status::Done);
+
+                ev.stage(Stage::Render, Status::Start);
+                let fb = crate::frame::FrameBuilder::new(p.clone())?;
+                render::render_all(&fb, r, o.chunk_frames, o.retries, None, o.jobs, &backend, ev)?;
+                ev.stage(Stage::Render, Status::Done);
+                Ok(())
+            })();
+
+            let audio_res = audio.join().map_err(|_| anyhow::anyhow!("the audio thread panicked")).and_then(|r| r);
+            ev.stage(Stage::Audio, if audio_res.is_ok() { Status::Done } else { Status::Failed });
+            // a plate / render failure fails the build; a finished mix stays cached for the retry
+            visual?;
+            audio_res?;
 
             ev.stage(Stage::Mux, Status::Start);
             if render::mux(&p, r, o.chunk_frames, &backend, &out)? {
