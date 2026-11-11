@@ -5,6 +5,7 @@ use resvg::tiny_skia::Pixmap;
 use resvg::usvg;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -51,6 +52,7 @@ fn cfg(msg: String) -> anyhow::Error {
     ConfigError(msg).into()
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct Probe {
     w: u32,
     h: u32,
@@ -59,29 +61,57 @@ struct Probe {
     audio: bool,
 }
 
+fn as_u32(v: &Value, key: &str) -> Result<u32> {
+    if let Some(n) = v.get(key).and_then(|x| x.as_u64()) {
+        return Ok(n as u32);
+    }
+    if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+        return Ok(s.parse()?);
+    }
+    bail!("ffprobe could not read {key}");
+}
+
+fn parse_probe(input: &Value) -> Result<Probe> {
+    let v = input;
+    let streams = v.get("streams").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let vid = streams
+        .iter()
+        .find(|s| s.get("codec_type").and_then(|x| x.as_str()) == Some("video"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if vid.is_null() {
+        bail!("ffprobe could not read a video stream");
+    }
+    let w = as_u32(&vid, "width")?;
+    let h = as_u32(&vid, "height")?;
+    let fps_rate = vid.get("r_frame_rate").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let fps = match fps_rate.split_once('/') {
+        Some((n, d)) => n.parse::<f64>().unwrap_or(30.0) / d.parse::<f64>().unwrap_or(1.0),
+        None => fps_rate.parse::<f64>().unwrap_or(30.0),
+    };
+    let audio = streams.iter().any(|s| s.get("codec_type").and_then(|x| x.as_str()) == Some("audio"));
+    Ok(Probe { w, h, fps, fps_rate, audio })
+}
+
 fn probe(input: &PathBuf) -> Result<Probe> {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate", "-of", "csv=p=0"])
+        .args(["-v", "error", "-show_streams", "-of", "json"])
         .arg(input)
         .output()
         .context("probing the input (is ffprobe on PATH?)")?;
-    let line = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string();
-    let parts: Vec<&str> = line.split(',').collect();
-    if parts.len() < 3 {
-        bail!("ffprobe could not read a video stream from {}", input.display());
+    if !out.status.success() {
+        bail!("ffprobe failed for {}: {}", input.display(), String::from_utf8_lossy(&out.stderr));
     }
-    let (w, h) = (parts[0].parse::<u32>()?, parts[1].parse::<u32>()?);
-    let fps_rate = parts[2].to_string();
-    let fps = match parts[2].split_once('/') {
-        Some((n, d)) => n.parse::<f64>().unwrap_or(30.0) / d.parse::<f64>().unwrap_or(1.0),
-        None => parts[2].parse::<f64>().unwrap_or(30.0),
-    };
-    let a = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0"])
-        .arg(input)
-        .output()
-        .context("probing the audio")?;
-    Ok(Probe { w, h, fps, fps_rate, audio: !a.stdout.is_empty() })
+    let json = String::from_utf8_lossy(&out.stdout);
+    let v: Value = serde_json::from_str(&json).context("parsing ffprobe output")?;
+    let p = parse_probe(&v).map_err(|e| {
+        if e.to_string().contains("could not read a video stream") {
+            anyhow::anyhow!("ffprobe could not read a video stream from {}", input.display())
+        } else {
+            e
+        }
+    })?;
+    Ok(p)
 }
 
 fn even(x: f64) -> u32 {
@@ -118,6 +148,20 @@ const BAYER8: [[u8; 8]; 8] = [
     [15, 47, 7, 39, 13, 45, 5, 37],
     [63, 31, 55, 23, 61, 29, 53, 21],
 ];
+
+const BAYER64: [[f64; 8]; 8] = {
+    let mut out = [[0.0f64; 8]; 8];
+    let mut y = 0usize;
+    while y < 8 {
+        let mut x = 0usize;
+        while x < 8 {
+            out[y][x] = (BAYER8[y][x] as f64 + 0.5) / 64.0 * 255.0;
+            x += 1;
+        }
+        y += 1;
+    }
+    out
+};
 
 fn ascii_frame(src: &[u8], w: usize, h: usize, cell: usize, masks: &[Vec<u8>], color: bool, out: &mut Vec<u8>) {
     out.clear();
@@ -171,7 +215,7 @@ fn ascii_frame(src: &[u8], w: usize, h: usize, cell: usize, masks: &[Vec<u8>], c
     }
 }
 
-fn dither_frame(src: &[u8], w: usize, h: usize, block: usize, color: bool, out: &mut Vec<u8>) {
+pub fn dither_frame(src: &[u8], w: usize, h: usize, block: usize, color: bool, out: &mut Vec<u8>) {
     out.clear();
     out.resize(w * h * 4, 0);
     for by in 0..(h + block - 1) / block {
@@ -190,7 +234,7 @@ fn dither_frame(src: &[u8], w: usize, h: usize, block: usize, color: bool, out: 
             let (r, g, b) = ((r / n) as f64, (g / n) as f64, (b / n) as f64);
             for y in by * block..((by + 1) * block).min(h) {
                 for x in bx * block..((bx + 1) * block).min(w) {
-                    let t = (BAYER8[y % 8][x % 8] as f64 + 0.5) / 64.0 * 255.0;
+                     let t = BAYER64[y % 8][x % 8];
                     let i = (y * w + x) * 4;
                     if color {
                         out[i] = if r > t { 255 } else { 0 };
@@ -310,4 +354,134 @@ pub fn stylize(a: &StylizeClipArgs) -> Result<StylizedClip> {
     }
     let asset_name = a.output.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
     Ok(StylizedClip { output: a.output.clone(), asset_name, preview_png: preview, width: w, height: h, fps: p.fps, frames, duration_s: frames as f64 / p.fps, style: a.style })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_probe_reads_video_and_audio() {
+        let json = r#"{"streams":[{"codec_type":"video","width":640,"height":360,"r_frame_rate":"30/1"},{"codec_type":"audio","index":1}]}"#;
+        let v: Value = serde_json::from_str(json).unwrap();
+        let p = parse_probe(&v).unwrap();
+        assert_eq!(p.w, 640);
+        assert_eq!(p.h, 360);
+        assert_eq!(p.fps_rate, "30/1");
+        assert_eq!(p.fps, 30.0);
+        assert!(p.audio);
+    }
+
+    #[test]
+    fn parse_probe_no_audio() {
+        let json = r#"{"streams":[{"codec_type":"video","width":100,"height":200,"r_frame_rate":"24000/1001"}]}"#;
+        let v: Value = serde_json::from_str(json).unwrap();
+        let p = parse_probe(&v).unwrap();
+        assert_eq!(p.w, 100);
+        assert_eq!(p.h, 200);
+        assert!(!p.audio);
+        assert!((p.fps - (24000.0 / 1001.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_probe_missing_video_errors() {
+        let json = r#"{"streams":[{"codec_type":"audio"}]}"#;
+        let v: Value = serde_json::from_str(json).unwrap();
+        assert!(parse_probe(&v).is_err());
+    }
+
+    #[test]
+    fn parse_probe_value_input() {
+        let v: Value = serde_json::from_str(r#"{"streams":[{"codec_type":"video","width":16,"height":16,"r_frame_rate":"10"}]}"#).unwrap();
+        let p = parse_probe(&v).unwrap();
+        assert_eq!(p.fps_rate, "10");
+        assert_eq!(p.fps, 10.0);
+    }
+
+    fn reference_dither_frame(src: &[u8], w: usize, h: usize, block: usize, color: bool, out: &mut Vec<u8>) {
+        out.clear();
+        out.resize(w * h * 4, 0);
+        for by in 0..(h + block - 1) / block {
+            for bx in 0..(w + block - 1) / block {
+                let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
+                let mut n = 0u64;
+                for y in by * block..((by + 1) * block).min(h) {
+                    for x in bx * block..((bx + 1) * block).min(w) {
+                        let i = (y * w + x) * 4;
+                        r += src[i] as u64;
+                        g += src[i + 1] as u64;
+                        b += src[i + 2] as u64;
+                        n += 1;
+                    }
+                }
+                let (r, g, b) = ((r / n) as f64, (g / n) as f64, (b / n) as f64);
+                for y in by * block..((by + 1) * block).min(h) {
+                    for x in bx * block..((bx + 1) * block).min(w) {
+                        let t = (BAYER8[y % 8][x % 8] as f64 + 0.5) / 64.0 * 255.0;
+                        let i = (y * w + x) * 4;
+                        if color {
+                            out[i] = if r > t { 255 } else { 0 };
+                            out[i + 1] = if g > t { 255 } else { 0 };
+                            out[i + 2] = if b > t { 255 } else { 0 };
+                        } else {
+                            let v = if 0.2126 * r + 0.7152 * g + 0.0722 * b > t { 255 } else { 0 };
+                            out[i] = v;
+                            out[i + 1] = v;
+                            out[i + 2] = v;
+                        }
+                        out[i + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dither_matches_reference() {
+        for (w, h, block, color) in [(10usize, 12usize, 3usize, true), (7, 9, 1, false), (16, 16, 4, true), (5, 5, 2, false), (1, 1, 1, true), (360, 640, 4, true), (13, 17, 7, false)] {
+            let mut src = vec![0u8; w * h * 4];
+            for i in 0..src.len() {
+                src[i] = (i as u8).wrapping_mul(37);
+            }
+            let mut out = Vec::new();
+            dither_frame(&src, w, h, block, color, &mut out);
+
+            let mut expected = Vec::new();
+            reference_dither_frame(&src, w, h, block, color, &mut expected);
+            assert_eq!(out, expected, "mismatch w={w} h={h} block={block} color={color}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_dither_360x640_30frames() {
+        let w = 360usize;
+        let h = 640usize;
+        let src = vec![128u8; w * h * 4];
+        let mut old_samples = Vec::new();
+        let mut new_samples = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            for _ in 0..30 {
+                let mut out = Vec::new();
+                reference_dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                std::hint::black_box(&out);
+            }
+            old_samples.push(start.elapsed());
+
+            let start = std::time::Instant::now();
+            for _ in 0..30 {
+                let mut out = Vec::new();
+                dither_frame(std::hint::black_box(&src), w, h, 4, true, &mut out);
+                std::hint::black_box(&out);
+            }
+            new_samples.push(start.elapsed());
+        }
+        old_samples.sort();
+        new_samples.sort();
+        let old_median = old_samples[2];
+        let new_median = new_samples[2];
+        println!("old median (reference): {:?}", old_median);
+        println!("new median (dither_frame): {:?}", new_median);
+    }
 }
