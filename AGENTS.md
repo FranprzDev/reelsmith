@@ -17,12 +17,12 @@ checklists) before making a video or changing the pipeline.
 | `crates/reelsmith` | MCP server: tools, briefs, render jobs, sample library, `animate_svg`, `draw_diagram`, `stylize_clip` |
 | `crates/promo` | template library + `promo` CLI: config, plan, plates, audio, render (fframes or HyperFrames), encode, QA, preview gate, ledger, telemetry |
 | `crates/datavid` | media layer: SVG helpers, easing, procedural audio + EBU R128 mastering, ffmpeg/ffprobe helpers, QA |
-| `docs/` | `PROMO_VIDEOS.md` (config reference), `MOTION_DIRECTION.md`, `PROMO_COPY_DESIGN.md`, `EVALUATION.md`, `LESSONS.md`, `TEARDOWN.md`, `TESSERACT.md` |
+| `docs/` | `PROMO_VIDEOS.md` (config reference), `MOTION_DIRECTION.md`, `PROMO_COPY_DESIGN.md`, `EVALUATION.md`, `LESSONS.md`, `TEARDOWN.md`, `ANATOMY.md`, `TESSERACT.md` |
 | `PERFORMANCE.md`, `DEMO.md` | measured timings and GPU setup; a 3-minute MCP demo script |
 | `examples/` | `sample/` (procedural media, complete brief), `logo-intro/` (`animate_svg` intro + end card) |
 | `evaluations/` | reference renders: expected QA values + `check.py` |
 | `scripts/` | `mcp_call.py` (drive the MCP server without a host), `compare_renders.py` (SSIM/PSNR/loudness of two renders), `tesseract-preview.py` |
-| `.agents/skills/` | project-local skills: `teardown` (technical illustrations), `simready` (3D asset sources) |
+| `.agents/skills/` | project-local skills: `teardown` (technical illustrations), `anatomy` (isometric explainer figures), `simready` (3D asset sources) |
 | `server/` | optional render-telemetry API (Cloudflare Worker) |
 
 ## Build
