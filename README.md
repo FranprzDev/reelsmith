@@ -72,13 +72,16 @@ color (`color: false` for white-on-black); `cell_px` is the glyph size. `dither`
 thresholding per channel (per luminance with `color: false`) over `cell_px`-sized blocks. The PNG preview is the
 first processed frame.
 
-## Technical illustration skill
+## Technical illustration skills
 
 The repository bundles Jakub Krehel's [`/teardown`](.agents/skills/teardown/SKILL.md)
-skill for configurable technical illustrations and exploded views, with SVG/PNG/PDF
+skill for configurable technical illustrations and exploded views, and Ryan's
+[`/anatomy`](.agents/skills/anatomy/SKILL.md) skill for crafted isometric explainer
+figures (a technical idea drawn as a real, working machine), both with SVG/PNG/PDF
 exports. Export an SVG, turn it into an alpha overlay with `animate_svg`, and follow
-the normal 360p-preview-first render flow. This is a project-local agent skill, not a
-new MCP tool or a global install. See [setup and video handoff](docs/TEARDOWN.md).
+the normal 360p-preview-first render flow. These are project-local agent skills, not
+new MCP tools or global installs. See the setup and video handoff docs:
+[teardown](docs/TEARDOWN.md), [anatomy](docs/ANATOMY.md).
 
 ## Install
 
