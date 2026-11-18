@@ -14,10 +14,10 @@ checklists) before making a video or changing the pipeline.
 
 | Path | What |
 |---|---|
-| `crates/reelsmith` | MCP server: tools, briefs, render jobs, sample library, `animate_svg`, `draw_diagram`, `stylize_clip` |
+| `crates/reelsmith` | MCP server: tools, briefs, render jobs, sample library, `animate_svg`, `draw_diagram`, `stylize_clip`, agent memory (`memory_load` / `memory_offload` / `memory_guide`) |
 | `crates/promo` | template library + `promo` CLI: config, plan, plates, audio, render (fframes or HyperFrames), encode, QA, preview gate, ledger, telemetry |
 | `crates/datavid` | media layer: SVG helpers, easing, procedural audio + EBU R128 mastering, ffmpeg/ffprobe helpers, QA |
-| `docs/` | `PROMO_VIDEOS.md` (config reference), `MOTION_DIRECTION.md`, `PROMO_COPY_DESIGN.md`, `EVALUATION.md`, `LESSONS.md`, `TEARDOWN.md`, `ANATOMY.md`, `TESSERACT.md` |
+| `docs/` | `PROMO_VIDEOS.md` (config reference), `MOTION_DIRECTION.md`, `PROMO_COPY_DESIGN.md`, `EVALUATION.md`, `LESSONS.md`, `MEMORY.md` (agent memory), `TEARDOWN.md`, `ANATOMY.md`, `TESSERACT.md` |
 | `PERFORMANCE.md`, `DEMO.md` | measured timings and GPU setup; a 3-minute MCP demo script |
 | `examples/` | `sample/` (procedural media, complete brief), `logo-intro/` (`animate_svg` intro + end card) |
 | `evaluations/` | reference renders: expected QA values + `check.py` |

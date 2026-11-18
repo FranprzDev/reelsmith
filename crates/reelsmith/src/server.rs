@@ -4,6 +4,7 @@ use crate::brief::{self, BriefWritten, CreateProjectArgs, ProjectCreated, WriteB
 use crate::clips::{self, ClipInfo, ClipList};
 use crate::diagram::{self, DrawDiagramArgs, DrawnDiagram};
 use crate::jobs::{JobStatus, Jobs};
+use crate::memory::{self, GuideSaved, LessonSaved, MemoryGuideArgs, MemoryLoad, MemoryLoadArgs, MemoryOffloadArgs};
 use crate::morph::{self, MorphSvgArgs, MorphedSvg};
 use crate::sample;
 use crate::stylize::{self, StylizeClipArgs, StylizedClip};
@@ -33,7 +34,10 @@ write it into the project's motion folder and use its asset_name as a beat overl
 draw_diagram does the same straight from Mermaid diagram text (flowchart, sequence, state, gantt, pie, ...), \
 rendered by the embedded Pele engine and drawn stroke by stroke with the default draw_on animation. \
 To transform one shape into another (a logo reveal, an icon transition), morph_svg morphs every filled path of one \
-SVG into another SVG's shapes and returns the same kind of alpha .mov.";
+SVG into another SVG's shapes and returns the same kind of alpha .mov. \
+Persistent memory: call memory_load on the project folder before write_brief so the lessons of earlier videos and \
+review rounds shape the new one, and memory_offload after each render or owner correction so the next video starts \
+from it. When saved lessons repeat or stop helping, rewrite the memory strategy with memory_guide.";
 
 /// Seconds `render` waits before handing back a job id (hosts such as Codex time tool calls out at 60 s).
 const DEFAULT_WAIT_S: u64 = 45;
@@ -200,6 +204,21 @@ impl Reelsmith {
     #[tool(description = "Stylize a video into an ASCII-art or ordered-dither clip: decodes it, rebuilds every frame in Rust (glyphs by brightness for ascii, Bayer 8x8 thresholding for dither; source colors or monochrome) and re-encodes an .mp4 with the original audio. Returns the clip, a PNG preview and the frame stats. Save it in the project's clips folder and use its asset_name as a beat clip.")]
     async fn stylize_clip(&self, Parameters(a): Parameters<StylizeClipArgs>) -> Result<Json<StylizedClip>, String> {
         Ok(Json(blocking(move || stylize::stylize(&a)).await?))
+    }
+
+    #[tool(description = "Load the persistent memory of a project: the memory guide (the standing strategy for what to remember) plus the lessons saved from earlier videos and review rounds, newest first, optionally filtered by query words. Call it before write_brief so earlier corrections shape the new video. The memory lives in <project>/memory as plain Markdown (seeded on first use); pass the same existing folder as project in several projects to share one memory.")]
+    async fn memory_load(&self, Parameters(a): Parameters<MemoryLoadArgs>) -> Result<Json<MemoryLoad>, String> {
+        Ok(Json(blocking(move || memory::load(&a)).await?))
+    }
+
+    #[tool(description = "Save a lesson to the persistent memory after a render or a review round: a short title, the lesson (symptom, cause, fix and a measured number when there is one - never a number nobody measured), optional tags and the brief or config it came from. Call it right after each render or owner correction so the next video starts from it.")]
+    async fn memory_offload(&self, Parameters(a): Parameters<MemoryOffloadArgs>) -> Result<Json<LessonSaved>, String> {
+        Ok(Json(blocking(move || memory::offload(&a)).await?))
+    }
+
+    #[tool(description = "Rewrite the memory guide (<project>/memory/GUIDE.md): the standing strategy memory_load returns first. When saved lessons repeat, contradict each other or stop helping, read them and the render history (renders.jsonl next to each config) and rewrite the guide so it prescribes what to load and what to offload for this kind of video. Keep it short: it comes back on every load.")]
+    async fn memory_guide(&self, Parameters(a): Parameters<MemoryGuideArgs>) -> Result<Json<GuideSaved>, String> {
+        Ok(Json(blocking(move || memory::write_guide(&a)).await?))
     }
 
     #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed (procedural, file, optional sampled soundfont with local path and acoustic/cinematic/funk palette, optional direction/key/bpm and energy per beat), captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering). The SoundFont bank is user-supplied and never bundled.")]
