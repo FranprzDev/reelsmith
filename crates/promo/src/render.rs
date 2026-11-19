@@ -268,6 +268,38 @@ fn mux_key(p: &Plan, work: &Path, rs: &[(usize, usize)], out: &Path) -> Result<S
 /// Join the rendered chunks and mux the mastered audio into `out`. Skips (returns false) when the parts, the mix
 /// and the destination are unchanged since the last mux AND the output file is still exactly what that mux wrote -
 /// so an externally edited or replaced output is always re-muxed, never kept by mistake.
+static MUX_TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn mux_tmp_path(out: &Path) -> PathBuf {
+    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    let name = out.file_name().and_then(|n| n.to_str()).unwrap_or("out.mp4");
+    let pid = std::process::id();
+    let counter = MUX_TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    parent.join(format!("{name}.{pid}.{counter}.tmp.mp4"))
+}
+
+/// True when `out` already exists in any form (regular file, hard link, symlink
+/// even if dangling, directory, ...). `symlink_metadata` does not follow links,
+/// so a dangling symlink still counts as present. Rename is only used for
+/// genuinely absent destinations (see `mux`): renaming over an existing path
+/// replaces it (new inode, breaking hard links and changing permissions),
+/// whereas copying overwrites in place and preserves those semantics (and
+/// fails on read-only destinations, as the old behaviour did).
+fn out_exists(out: &Path) -> bool {
+    // "Exists" here means "not a NotFound": any present entry OR any other
+    // metadata error keeps the copy branch, so the rename optimization is
+    // used only when symlink_metadata returns NotFound.
+    match std::fs::symlink_metadata(out) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+#[cfg(test)]
+fn out_is_symlink(out: &Path) -> bool {
+    std::fs::symlink_metadata(out).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
 pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<bool> {
     let work = chunks_dir(p, r);
     let ranges = ranges(p, chunk_frames);
@@ -289,7 +321,11 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
     }
     std::fs::write(work.join("parts.txt"), list)?;
     anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
-    let tmp = std::env::temp_dir().join(format!("promo_{}_{}.mp4", p.name, std::process::id()));
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = mux_tmp_path(out);
+    let _ = std::fs::remove_file(&tmp);
     let mut args: Vec<String> = ["-f", "concat", "-safe", "0", "-i"].map(String::from).to_vec();
     args.extend([
         work.join("parts.txt").display().to_string(),
@@ -311,12 +347,26 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
         "+faststart".into(),
         tmp.display().to_string(),
     ]);
-    datavid::media::ffmpeg(&args, "the video stream-copy / audio mux")?;
-    if let Some(d) = out.parent() {
-        std::fs::create_dir_all(d)?;
+    if let Err(e) = datavid::media::ffmpeg(&args, "the video stream-copy / audio mux") {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    std::fs::copy(&tmp, out).with_context(|| format!("copying the MP4 to {}", out.display()))?;
-    let _ = std::fs::remove_file(&tmp);
+    // Only a genuinely absent destination may use the rename optimization:
+    // renaming over an existing path replaces it (new inode, breaking hard
+    // links and changing permissions). For any existing output - symlink even
+    // if dangling, regular file, hard link, directory - keep the copy branch,
+    // which overwrites in place (preserving inode/hard-link semantics where
+    // possible) and fails on read-only destinations as before.
+    if out_exists(out) {
+        if let Err(e) = std::fs::copy(&tmp, out) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        let _ = std::fs::remove_file(&tmp);
+    } else if let Err(e) = std::fs::rename(&tmp, out) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     std::fs::write(&key_file, format!("{key}\n{}", crate::plan::file_fingerprint(out)))?;
     Ok(true)
 }
@@ -453,5 +503,108 @@ end = 1.2
         black_box(new);
 
         eprintln!("old concat+hash: {old_t:?}; streaming: {new_t:?}");
+    }
+
+    #[test]
+    fn mux_tmp_path_parent_matches_out() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let tmp = mux_tmp_path(out);
+        assert_eq!(tmp.parent(), out.parent());
+    }
+
+    #[test]
+    fn mux_tmp_path_unique_across_calls() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let a = mux_tmp_path(out);
+        let b = mux_tmp_path(out);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mux_tmp_path_extension_is_tmp_mp4() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let tmp = mux_tmp_path(out);
+        assert!(tmp.to_string_lossy().ends_with(".tmp.mp4"));
+    }
+
+    #[test]
+    fn out_exists_regular_file_and_absent_path() {
+        let dir = std::env::temp_dir().join(format!("outexists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("regular.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(out_exists(&file));
+        let absent = dir.join("absent.txt");
+        assert!(!out_exists(&absent));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn out_exists_dangling_symlink() {
+        let dir = std::env::temp_dir().join(format!("outexistsdangling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dangling = dir.join("dangling.mp4");
+        let _ = std::fs::remove_file(&dangling);
+        std::os::unix::fs::symlink("nope.mp4", &dangling).unwrap();
+        assert!(out_exists(&dangling));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_output_is_detected() {
+        let dir = std::env::temp_dir().join(format!("muxsym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.mp4");
+        std::fs::write(&target, b"x").unwrap();
+        let link = dir.join("link.mp4");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(out_is_symlink(&link));
+        assert!(!out_is_symlink(&target));
+        // dangling relative symlink is still detected
+        let dangling = dir.join("dangling.mp4");
+        let _ = std::fs::remove_file(&dangling);
+        std::os::unix::fs::symlink("nope.mp4", &dangling).unwrap();
+        assert!(out_is_symlink(&dangling));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_output_copy_follows_link() {
+        let dir = std::env::temp_dir().join(format!("muxsymcopy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.mp4");
+        std::fs::write(&target, b"old").unwrap();
+        let link = dir.join("link.mp4");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let tmp = dir.join("tmp.mp4");
+        std::fs::write(&tmp, b"newbytes").unwrap();
+        // emulate the symlink branch
+        assert!(std::fs::copy(&tmp, &link).is_ok());
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(std::fs::read(&target).unwrap(), b"newbytes");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_rename_preserves_old_on_failure() {
+        let dir = std::env::temp_dir().join(format!("muxtmp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.mp4");
+        std::fs::write(&out, b"original").unwrap();
+        let missing = dir.join("does-not-exist.tmp.mp4");
+        let res = std::fs::rename(&missing, &out);
+        assert!(res.is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
