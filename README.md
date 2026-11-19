@@ -28,6 +28,9 @@ Burned-in captions are off by default.
 | `get_status(job_id, wait_seconds?)` | the state of a render (`running`, `succeeded`, `qa_failed`, `failed`) and its result |
 | `get_qa(config, resolution, video?)` | re-run QA on a rendered MP4 |
 | `system_info(encoder?)` | the GPU / encoder backend this machine renders with, every probe tried and why it was chosen |
+| `memory_load(project, query?, limit?)` | the persistent agent memory: the memory guide plus the lessons saved from earlier videos and review rounds, newest first, optionally filtered |
+| `memory_offload(project, title, lesson, tags?, context?)` | save a lesson to the memory after a render or an owner correction |
+| `memory_guide(project, guide)` | rewrite the memory strategy (`<project>/memory/GUIDE.md`) when the lessons show a better one |
 
 Finite choices are enums in the tool schemas: `aspect` = `9:16` · `16:9` · `1:1`, `music` = `procedural` · `file` ·
 `soundfont` · `none`, `resolution` = `preview` · `draft` · `final`, `encoder` = `auto` · `nvenc` · `amf` · `qsv` · `vaapi` ·
@@ -72,13 +75,26 @@ color (`color: false` for white-on-black); `cell_px` is the glyph size. `dither`
 thresholding per channel (per luminance with `color: false`) over `cell_px`-sized blocks. The PNG preview is the
 first processed frame.
 
-## Technical illustration skill
+### Agent memory
+
+`memory_load` / `memory_offload` / `memory_guide` give the agent a persistent memory across
+videos, after [“Self-Improving Memory”](https://facebookresearch.github.io/RAM/blogs/self_improving_memory/)
+(Chen et al., Meta AI, 2026): LOAD the lessons of earlier videos before authoring a brief,
+OFFLOAD a lesson after each render or owner correction, and let the agent rewrite its own
+memory guide when the lessons show a better strategy. The memory is plain Markdown in
+`<project>/memory` (seeded on first use); pass the same folder as `project` in several
+projects to share one memory. See [docs/MEMORY.md](docs/MEMORY.md).
+
+## Technical illustration skills
 
 The repository bundles Jakub Krehel's [`/teardown`](.agents/skills/teardown/SKILL.md)
-skill for configurable technical illustrations and exploded views, with SVG/PNG/PDF
+skill for configurable technical illustrations and exploded views, and Ryan's
+[`/anatomy`](.agents/skills/anatomy/SKILL.md) skill for crafted isometric explainer
+figures (a technical idea drawn as a real, working machine), both with SVG/PNG/PDF
 exports. Export an SVG, turn it into an alpha overlay with `animate_svg`, and follow
-the normal 360p-preview-first render flow. This is a project-local agent skill, not a
-new MCP tool or a global install. See [setup and video handoff](docs/TEARDOWN.md).
+the normal 360p-preview-first render flow. These are project-local agent skills, not
+new MCP tools or global installs. See the setup and video handoff docs:
+[teardown](docs/TEARDOWN.md), [anatomy](docs/ANATOMY.md).
 
 ## Install
 

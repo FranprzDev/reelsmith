@@ -62,3 +62,19 @@ jobs:
           for test in .agents/skills/teardown/scripts/test-*.cjs; do
             node "$test" || exit
           done
+
+  anatomy-skill:
+    name: anatomy skill tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Test vendored anatomy skill
+        run: |
+          cd .agents/skills/anatomy
+          test_deps="$(mktemp -d)"
+          trap 'rm -rf "$test_deps"' EXIT
+          npm install --prefix "$test_deps" --no-audit --no-fund --ignore-scripts react@19.3.0 react-dom@19.3.0 typescript@5.9.3 esbuild@0.28.2
+          NODE_PATH="$test_deps/node_modules" node --test scripts/*.test.mjs

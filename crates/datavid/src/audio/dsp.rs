@@ -226,6 +226,46 @@ pub fn downsample(x: &[f64], down: usize) -> Vec<f64> {
         .map(|i| {
             let c = i * down;
             let mut s = 0.0;
+            // precompute valid k range, then zip contiguous slices in ascending k order
+            let mut lo = if half > c { half - c } else { 0 };
+            if lo > h.len() {
+                lo = h.len();
+            }
+            let hi_raw = x.len() + half - c;
+            let mut hi = if hi_raw < h.len() { hi_raw } else { h.len() };
+            if hi < lo {
+                hi = lo;
+            }
+            let len = hi - lo;
+            if len > 0 {
+                let start = c + lo - half;
+                let xs = &x[start..start + len];
+                let hs = &h[lo..hi];
+                for (xv, hv) in xs.iter().zip(hs.iter()) {
+                    s += *xv * *hv;
+                }
+            }
+            s
+        })
+        .collect()
+}
+
+
+
+/// prior main (origin/main) production downsample: cached FIR for down==4, uncached otherwise; simple per-tap accumulation
+#[cfg(test)]
+fn prior_main_downsample(x: &[f64], down: usize) -> Vec<f64> {
+    let h: Vec<f64> = if down == 4 {
+        FIR_DOWN_4.get_or_init(|| interp_fir_uncached(4).iter().map(|v| v / 4.0).collect()).clone()
+    } else {
+        interp_fir_uncached(down).iter().map(|v| v / down as f64).collect()
+    };
+    let half = h.len() / 2;
+    let n = x.len() / down;
+    (0..n)
+        .map(|i| {
+            let c = i * down;
+            let mut s = 0.0;
             for (k, hv) in h.iter().enumerate() {
                 let idx = c as isize + k as isize - half as isize;
                 if idx >= 0 && (idx as usize) < x.len() {
@@ -518,5 +558,316 @@ mod tests {
         let tc = t1.elapsed();
         assert_bits_eq(&r, &c, "bench fftconvolve");
         eprintln!("fftconvolve: reference {tr:?}, candidate {tc:?}");
+    }
+
+    #[test]
+    fn upsample_raw_bits_odd_nan_inf_signedzero() {
+        for up in [1usize, 2, 3, 4, 8] {
+            for n in [0usize, 1, 3, 5, 7] {
+                let mut x = vec![0.0; n];
+                if n > 0 { x[0] = f64::NAN; }
+                if n > 1 { x[1] = f64::INFINITY; }
+                if n > 2 { x[2] = f64::NEG_INFINITY; }
+                if n > 3 { x[3] = -0.0; }
+                if n > 4 { x[4] = 1.0; }
+                if n > 5 { x[5] = -1.0; }
+                if n > 6 { x[6] = 0.5; }
+                let a = upsample(&x, up);
+                let b = reference_upsample(&x, up);
+                assert_bits_eq(&a, &b, &format!("upsample raw bits n={n} up={up}"));
+            }
+        }
+    }
+
+    #[test]
+    fn downsample_raw_bits_odd_nan_inf_signedzero() {
+        for down in [1usize, 2, 3, 4, 8] {
+            for n in [0usize, 1, 3, 5, 7, 9, 65] {
+                let mut x = vec![0.0; n];
+                if n > 0 { x[0] = f64::NAN; }
+                if n > 1 { x[1] = f64::INFINITY; }
+                if n > 2 { x[2] = f64::NEG_INFINITY; }
+                if n > 3 { x[3] = -0.0; }
+                if n > 4 { x[4] = 1.0; }
+                if n > 5 { x[5] = -1.0; }
+                if n > 6 { x[6] = 0.5; }
+                let a = downsample(&x, down);
+                let b = reference_downsample(&x, down);
+                assert_bits_eq(&a, &b, &format!("downsample raw bits n={n} down={down}"));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_upsample_median5_6s() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 6 * 48_000, 3);
+        let up = 4usize;
+        let c = upsample(&x, up);
+        let r = reference_upsample(&x, up);
+        assert_bits_eq(&c, &r, "bench upsample 6s");
+        black_box(&c);
+        black_box(&x);
+        let mut new_medians = Vec::new();
+        let mut old_medians = Vec::new();
+        for _ in 0..5 {
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = upsample(black_box(&x), up);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = reference_upsample(black_box(&x), up);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+        }
+        eprintln!("upsample 6s medians new: {:?}", new_medians);
+        eprintln!("upsample 6s medians old: {:?}", old_medians);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_upsample_median5_tiny() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 37, 11);
+        let up = 4usize;
+        let c = upsample(&x, up);
+        let r = reference_upsample(&x, up);
+        assert_bits_eq(&c, &r, "bench upsample tiny");
+        black_box(&c);
+        black_box(&x);
+        let mut new_medians = Vec::new();
+        let mut old_medians = Vec::new();
+        for _ in 0..5 {
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = upsample(black_box(&x), up);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = reference_upsample(black_box(&x), up);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+        }
+        eprintln!("upsample tiny medians new: {:?}", new_medians);
+        eprintln!("upsample tiny medians old: {:?}", old_medians);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_downsample_median5_6s() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 6 * 48_000, 7);
+        let down = 4usize;
+        let c = downsample(&x, down);
+        let r = prior_main_downsample(&x, down);
+        assert_bits_eq(&c, &r, "bench downsample 6s");
+        black_box(&c);
+        black_box(&r);
+        black_box(&x);
+        let mut new_medians = Vec::new();
+        let mut old_medians = Vec::new();
+        for _ in 0..5 {
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = downsample(black_box(&x), down);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = prior_main_downsample(black_box(&x), down);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+        }
+        eprintln!("downsample 6s medians new: {:?}", new_medians);
+        eprintln!("downsample 6s medians old: {:?}", old_medians);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_downsample_median5_24s() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 24 * 48_000, 7);
+        let down = 4usize;
+        let c = downsample(&x, down);
+        let r = prior_main_downsample(&x, down);
+        assert_bits_eq(&c, &r, "bench downsample 24s");
+        black_box(&c);
+        black_box(&r);
+        black_box(&x);
+        let mut new_medians = Vec::new();
+        let mut old_medians = Vec::new();
+        for _ in 0..5 {
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = downsample(black_box(&x), down);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = prior_main_downsample(black_box(&x), down);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+        }
+        eprintln!("downsample 24s medians new: {:?}", new_medians);
+        eprintln!("downsample 24s medians old: {:?}", old_medians);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_downsample_median5_tiny() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 37, 13);
+        let down = 4usize;
+        let c = downsample(&x, down);
+        let r = reference_downsample(&x, down);
+        assert_bits_eq(&c, &r, "bench downsample tiny");
+        black_box(&c);
+        black_box(&x);
+        let mut new_medians = Vec::new();
+        let mut old_medians = Vec::new();
+        for _ in 0..5 {
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = downsample(black_box(&x), down);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = Instant::now();
+                    let out = reference_downsample(black_box(&x), down);
+                    black_box(&out);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+        }
+        eprintln!("downsample tiny medians new: {:?}", new_medians);
+        eprintln!("downsample tiny medians old: {:?}", old_medians);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_downsample_median5_oversampled6s() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let x = signal("random", 1_152_000, 7);
+        let down = 4usize;
+        let c = downsample(&x, down);
+        let r = prior_main_downsample(&x, down);
+        assert_bits_eq(&c, &r, "bench downsample oversampled6s");
+        black_box(&c);
+        black_box(&r);
+        black_box(&x);
+        let mut new_medians = Vec::new();
+        let mut old_medians = Vec::new();
+        for round in 0..5usize {
+            if round % 2 == 0 {
+                let mut ts: Vec<std::time::Duration> = (0..30)
+                    .map(|_| {
+                        let s = Instant::now();
+                        let out = prior_main_downsample(black_box(&x), down);
+                        black_box(&out);
+                        s.elapsed()
+                    })
+                    .collect();
+                ts.sort();
+                old_medians.push(ts[ts.len() / 2]);
+
+                let mut ts: Vec<std::time::Duration> = (0..30)
+                    .map(|_| {
+                        let s = Instant::now();
+                        let out = downsample(black_box(&x), down);
+                        black_box(&out);
+                        s.elapsed()
+                    })
+                    .collect();
+                ts.sort();
+                new_medians.push(ts[ts.len() / 2]);
+            } else {
+                let mut ts: Vec<std::time::Duration> = (0..30)
+                    .map(|_| {
+                        let s = Instant::now();
+                        let out = downsample(black_box(&x), down);
+                        black_box(&out);
+                        s.elapsed()
+                    })
+                    .collect();
+                ts.sort();
+                new_medians.push(ts[ts.len() / 2]);
+
+                let mut ts: Vec<std::time::Duration> = (0..30)
+                    .map(|_| {
+                        let s = Instant::now();
+                        let out = prior_main_downsample(black_box(&x), down);
+                        black_box(&out);
+                        s.elapsed()
+                    })
+                    .collect();
+                ts.sort();
+                old_medians.push(ts[ts.len() / 2]);
+            }
+        }
+        eprintln!("downsample oversampled6s medians new: {:?}", new_medians);
+        eprintln!("downsample oversampled6s medians old: {:?}", old_medians);
     }
 }
