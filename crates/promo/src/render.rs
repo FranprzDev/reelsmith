@@ -105,27 +105,34 @@ fn stamp(dir: &Path, name: &str) -> String {
 
 /// what a chunk's pixels depend on
 fn chunk_key(fb: &FrameBuilder, r: Res, a: usize, b: usize, backend: &Backend) -> String {
+    use std::hash::Hasher;
     let p = &fb.plan;
     let fd = p.frames_dir(r);
     let (w, h) = p.out_size(r);
-    let mut s = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
+    let mut hsh = std::collections::hash_map::DefaultHasher::new();
+    let header = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
+    hsh.write(header.as_bytes());
     for (i, sh) in p.shots.iter().enumerate() {
         if p.fi(sh.t0) < b && p.fi(sh.t1) > a {
-            s.push_str(&stamp(&fd, &format!(".shot_{i:03}")));
+            let st = stamp(&fd, &format!(".shot_{i:03}"));
+            hsh.write(st.as_bytes());
         }
     }
     for (i, o) in p.overlays.iter().enumerate() {
         if p.fi(o.t0) < b && p.fi(o.t1) > a {
-            s.push_str(&stamp(&fd, &format!(".ov_{i:02}")));
+            let st = stamp(&fd, &format!(".ov_{i:02}"));
+            hsh.write(st.as_bytes());
         }
     }
     if fb.font.is_some() {
-        s.push_str(&p.font.display().to_string());
+        hsh.write(p.font.display().to_string().as_bytes());
     }
     for f in a..b {
-        s.push_str(&fb.svg(f));
+        let svg = fb.svg(f);
+        hsh.write(svg.as_bytes());
     }
-    key_of(&s)
+    hsh.write_u8(0xff);
+    format!("{:016x}", hsh.finish())
 }
 
 /// Render chunk `k` (frames `a..b`) unless it is current; a killed render is retried `retries` times.
@@ -261,6 +268,38 @@ fn mux_key(p: &Plan, work: &Path, rs: &[(usize, usize)], out: &Path) -> Result<S
 /// Join the rendered chunks and mux the mastered audio into `out`. Skips (returns false) when the parts, the mix
 /// and the destination are unchanged since the last mux AND the output file is still exactly what that mux wrote -
 /// so an externally edited or replaced output is always re-muxed, never kept by mistake.
+static MUX_TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn mux_tmp_path(out: &Path) -> PathBuf {
+    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    let name = out.file_name().and_then(|n| n.to_str()).unwrap_or("out.mp4");
+    let pid = std::process::id();
+    let counter = MUX_TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    parent.join(format!("{name}.{pid}.{counter}.tmp.mp4"))
+}
+
+/// True when `out` already exists in any form (regular file, hard link, symlink
+/// even if dangling, directory, ...). `symlink_metadata` does not follow links,
+/// so a dangling symlink still counts as present. Rename is only used for
+/// genuinely absent destinations (see `mux`): renaming over an existing path
+/// replaces it (new inode, breaking hard links and changing permissions),
+/// whereas copying overwrites in place and preserves those semantics (and
+/// fails on read-only destinations, as the old behaviour did).
+fn out_exists(out: &Path) -> bool {
+    // "Exists" here means "not a NotFound": any present entry OR any other
+    // metadata error keeps the copy branch, so the rename optimization is
+    // used only when symlink_metadata returns NotFound.
+    match std::fs::symlink_metadata(out) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+#[cfg(test)]
+fn out_is_symlink(out: &Path) -> bool {
+    std::fs::symlink_metadata(out).map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
+
 pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path) -> Result<bool> {
     let work = chunks_dir(p, r);
     let ranges = ranges(p, chunk_frames);
@@ -282,7 +321,11 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
     }
     std::fs::write(work.join("parts.txt"), list)?;
     anyhow::ensure!(p.audio_wav().exists(), "no mastered audio yet (promo audio)");
-    let tmp = std::env::temp_dir().join(format!("promo_{}_{}.mp4", p.name, std::process::id()));
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = mux_tmp_path(out);
+    let _ = std::fs::remove_file(&tmp);
     let mut args: Vec<String> = ["-f", "concat", "-safe", "0", "-i"].map(String::from).to_vec();
     args.extend([
         work.join("parts.txt").display().to_string(),
@@ -304,12 +347,264 @@ pub fn mux(p: &Plan, r: Res, chunk_frames: usize, _backend: &Backend, out: &Path
         "+faststart".into(),
         tmp.display().to_string(),
     ]);
-    datavid::media::ffmpeg(&args, "the video stream-copy / audio mux")?;
-    if let Some(d) = out.parent() {
-        std::fs::create_dir_all(d)?;
+    if let Err(e) = datavid::media::ffmpeg(&args, "the video stream-copy / audio mux") {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    std::fs::copy(&tmp, out).with_context(|| format!("copying the MP4 to {}", out.display()))?;
-    let _ = std::fs::remove_file(&tmp);
+    // Only a genuinely absent destination may use the rename optimization:
+    // renaming over an existing path replaces it (new inode, breaking hard
+    // links and changing permissions). For any existing output - symlink even
+    // if dangling, regular file, hard link, directory - keep the copy branch,
+    // which overwrites in place (preserving inode/hard-link semantics where
+    // possible) and fails on read-only destinations as before.
+    if out_exists(out) {
+        if let Err(e) = std::fs::copy(&tmp, out) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        let _ = std::fs::remove_file(&tmp);
+    } else if let Err(e) = std::fs::rename(&tmp, out) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     std::fs::write(&key_file, format!("{key}\n{}", crate::plan::file_fingerprint(out)))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PromoFile;
+    use crate::encode::{Backend, Encoder, Gpu};
+    use crate::frame::FrameBuilder;
+    use crate::plan::{Overrides, Plan};
+
+    fn test_plan() -> Plan {
+        let dir = std::env::temp_dir().join(format!("reelsmith-render-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let font = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fonts/PixelifySans-Bold.ttf");
+        let font = font.to_string_lossy().replace('\\', "/");
+        let cfg = format!(
+            r#"
+[video]
+name = "render-parity"
+aspect = "9:16"
+flashes = [0.0, 0.5, 1.0]
+
+[[shot]]
+clip = "clip-a"
+dur = 0.6
+
+[[shot]]
+clip = "clip-b"
+dur = 0.6
+
+[[overlay]]
+asset = "overlay"
+t0 = 0.1
+t1 = 1.1
+crop = [0, 0, 100, 50]
+x = 10.0
+y = 20.0
+w = 540.0
+
+[look]
+vignette = 0.42
+flash_opacity = 0.63
+flash_dur = 0.25
+
+[captions]
+enabled = true
+font = "{font}"
+words = [[0.0, "HELLO"], [0.45, "WORLD WIDE"], [1.0, "TAIL"]]
+end = 1.2
+"#
+        );
+        let f = PromoFile::from_toml_str(&cfg, &dir).unwrap();
+        Plan::resolve(f, &dir.join("render.toml"), &Overrides::default()).unwrap()
+    }
+
+    fn backend() -> Backend {
+        Backend { encoder: Encoder::X264, gpu: Gpu::None, hw_decode: None, device: None, reason: String::new(), probes: vec![] }
+    }
+
+    fn old_chunk_key(fb: &FrameBuilder, r: crate::config::Res, a: usize, b: usize, backend: &Backend) -> String {
+        let p = &fb.plan;
+        let fd = p.frames_dir(r);
+        let (w, h) = p.out_size(r);
+        let mut s = format!("{PART_CODEC} {} {w}x{h} {} {:?} {:?}", r.tag(), p.fps, backend.encoder.args(r, w, h, p.fps), backend.device);
+        for (i, sh) in p.shots.iter().enumerate() {
+            if p.fi(sh.t0) < b && p.fi(sh.t1) > a {
+                s.push_str(&stamp(&fd, &format!(".shot_{i:03}")));
+            }
+        }
+        for (i, o) in p.overlays.iter().enumerate() {
+            if p.fi(o.t0) < b && p.fi(o.t1) > a {
+                s.push_str(&stamp(&fd, &format!(".ov_{i:02}")));
+            }
+        }
+        if fb.font.is_some() {
+            s.push_str(&p.font.display().to_string());
+        }
+        for f in a..b {
+            s.push_str(&fb.svg(f));
+        }
+        key_of(&s)
+    }
+
+    #[test]
+    fn chunk_key_matches_legacy_concat() {
+        let fb = FrameBuilder::new(test_plan()).unwrap();
+        let b = backend();
+        let n = fb.plan.frames();
+        let r = crate::config::Res::Draft;
+        for &(a, end) in &[(0usize, 1usize), (0, n), (2, 5), (n.saturating_sub(3), n)] {
+            let new = chunk_key(&fb, r, a, end, &b);
+            let old = old_chunk_key(&fb, r, a, end, &b);
+            assert_eq!(new, old, "range {a}..{end}");
+        }
+    }
+
+    #[test]
+    fn chunk_key_caption_overlay_fixture() {
+        let fb = FrameBuilder::new(test_plan()).unwrap();
+        let b = backend();
+        let new = chunk_key(&fb, crate::config::Res::Preview, 0, fb.plan.frames(), &b);
+        let old = old_chunk_key(&fb, crate::config::Res::Preview, 0, fb.plan.frames(), &b);
+        assert_eq!(new, old);
+    }
+
+    #[test]
+    #[ignore = "benchmark: cargo test -p promo --lib render::tests::bench_chunk_key_10k -- --ignored --nocapture"]
+    fn bench_chunk_key_10k() {
+        use std::hash::Hasher;
+        use std::hint::black_box;
+        use std::time::Instant;
+        let chunk = "a".repeat(8192);
+        let chunks: Vec<String> = (0..10_000).map(|_| chunk.clone()).collect();
+
+        let start = Instant::now();
+        let mut s = String::with_capacity(chunks.len() * chunk.len());
+        for c in &chunks {
+            s.push_str(c);
+        }
+        let old = key_of(&s);
+        let old_t = start.elapsed();
+        black_box(old);
+
+        let start = Instant::now();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for c in &chunks {
+            h.write(c.as_bytes());
+        }
+        h.write_u8(0xff);
+        let new = format!("{:016x}", h.finish());
+        let new_t = start.elapsed();
+        black_box(new);
+
+        eprintln!("old concat+hash: {old_t:?}; streaming: {new_t:?}");
+    }
+
+    #[test]
+    fn mux_tmp_path_parent_matches_out() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let tmp = mux_tmp_path(out);
+        assert_eq!(tmp.parent(), out.parent());
+    }
+
+    #[test]
+    fn mux_tmp_path_unique_across_calls() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let a = mux_tmp_path(out);
+        let b = mux_tmp_path(out);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mux_tmp_path_extension_is_tmp_mp4() {
+        let out = std::path::Path::new("/tmp/foo/out.mp4");
+        let tmp = mux_tmp_path(out);
+        assert!(tmp.to_string_lossy().ends_with(".tmp.mp4"));
+    }
+
+    #[test]
+    fn out_exists_regular_file_and_absent_path() {
+        let dir = std::env::temp_dir().join(format!("outexists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("regular.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(out_exists(&file));
+        let absent = dir.join("absent.txt");
+        assert!(!out_exists(&absent));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn out_exists_dangling_symlink() {
+        let dir = std::env::temp_dir().join(format!("outexistsdangling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dangling = dir.join("dangling.mp4");
+        let _ = std::fs::remove_file(&dangling);
+        std::os::unix::fs::symlink("nope.mp4", &dangling).unwrap();
+        assert!(out_exists(&dangling));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_output_is_detected() {
+        let dir = std::env::temp_dir().join(format!("muxsym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.mp4");
+        std::fs::write(&target, b"x").unwrap();
+        let link = dir.join("link.mp4");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(out_is_symlink(&link));
+        assert!(!out_is_symlink(&target));
+        // dangling relative symlink is still detected
+        let dangling = dir.join("dangling.mp4");
+        let _ = std::fs::remove_file(&dangling);
+        std::os::unix::fs::symlink("nope.mp4", &dangling).unwrap();
+        assert!(out_is_symlink(&dangling));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_output_copy_follows_link() {
+        let dir = std::env::temp_dir().join(format!("muxsymcopy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.mp4");
+        std::fs::write(&target, b"old").unwrap();
+        let link = dir.join("link.mp4");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let tmp = dir.join("tmp.mp4");
+        std::fs::write(&tmp, b"newbytes").unwrap();
+        // emulate the symlink branch
+        assert!(std::fs::copy(&tmp, &link).is_ok());
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(std::fs::read(&target).unwrap(), b"newbytes");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_rename_preserves_old_on_failure() {
+        let dir = std::env::temp_dir().join(format!("muxtmp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.mp4");
+        std::fs::write(&out, b"original").unwrap();
+        let missing = dir.join("does-not-exist.tmp.mp4");
+        let res = std::fs::rename(&missing, &out);
+        assert!(res.is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

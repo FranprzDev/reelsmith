@@ -4,12 +4,14 @@
 //! * `brief.toml`, one ad: its beats (text + clips + optional overlay) and end card. It `extends = "promo.toml"`, so
 //!   the template resolves both into one timeline exactly as the `promo` CLI does.
 use anyhow::{Context, Result, bail};
-use promo::config::{Aspect, CueKind, Engine, MusicKind};
+use promo::config::{Aspect, CueKind, Engine, MusicDirection, MusicKind, SoundfontStyle};
 use promo::pipeline::{self, PlanSummary};
 use promo::{Overrides, Plan, Res};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use toml::{Table, Value};
 
 pub const STYLE_FILE: &str = "promo.toml";
@@ -26,13 +28,25 @@ pub struct CreateProjectArgs {
     /// canvas shape: "9:16" (Reels/TikTok/Shorts), "16:9" (YouTube) or "1:1"
     #[serde(default)]
     pub aspect: Aspect,
-    /// music bed: "procedural" (built-in, no samples), "file" (your own track in `music_file`) or "none"
+    /// music bed: "procedural" (built-in, no samples), "file" (your own track in `music_file`), "soundfont" (local SF2 bank in `music_soundfont`) or "none"
     #[serde(default)]
     pub music: MusicKind,
     /// tempo of the procedural bed (default 128)
     pub bpm: Option<f64>,
     /// audio file for `music = "file"`
     pub music_file: Option<PathBuf>,
+    /// optional music direction for procedural or sampled beds (mood): "calm", "uplifting" or "tense"
+    #[serde(default, alias = "mood", alias = "music_mood", alias = "direction")]
+    pub music_direction: Option<MusicDirection>,
+    /// root note for directed music (MIDI note, 36..=72)
+    #[serde(default, alias = "key_midi", alias = "root", alias = "root_midi")]
+    pub music_key: Option<f64>,
+    /// local SF2 bank for `music = "soundfont"`
+    #[serde(default, alias = "soundfont_path")]
+    pub music_soundfont: Option<PathBuf>,
+    /// instrument palette for `music = "soundfont"`: "acoustic", "cinematic" or "funk"
+    #[serde(default, alias = "soundfont_style", alias = "music_style")]
+    pub music_soundfont_style: Option<SoundfontStyle>,
     /// burn the captions into the picture (default false: the texts only set the timing and go to an SRT sidecar)
     #[serde(default)]
     pub captions_burned_in: bool,
@@ -95,6 +109,9 @@ pub struct BeatArg {
     pub flash: bool,
     /// a sound cue on the cut into this beat
     pub cue: Option<CueKind>,
+    /// relative music energy for this beat (0..=1)
+    #[serde(default, alias = "energy", alias = "intensity", alias = "level")]
+    pub music_energy: Option<f64>,
     pub overlay: Option<OverlayArg>,
 }
 
@@ -112,6 +129,9 @@ pub struct EndCardArg {
     pub w: Option<f64>,
     /// closing text for the SRT / captions
     pub text: Option<String>,
+    /// relative music energy for this card (0..=1)
+    #[serde(default, alias = "energy", alias = "intensity", alias = "level")]
+    pub music_energy: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -120,6 +140,21 @@ pub struct WriteBriefArgs {
     pub project_dir: PathBuf,
     /// output name: files are `out/<name>_<preview|draft|final>_<w>x<h>.mp4`
     pub name: String,
+    /// optional music direction for procedural or sampled beds (overrides the project style)
+    #[serde(default, alias = "mood", alias = "music_mood", alias = "direction")]
+    pub music_direction: Option<MusicDirection>,
+    /// tempo for directed music (overrides the project style)
+    #[serde(default)]
+    pub music_bpm: Option<f64>,
+    /// root note for directed music (MIDI note, 36..=72)
+    #[serde(default, alias = "key_midi", alias = "root", alias = "root_midi")]
+    pub music_key: Option<f64>,
+    /// local SF2 bank for `music.kind = "soundfont"` (overrides the project style)
+    #[serde(default, alias = "soundfont_path")]
+    pub music_soundfont: Option<PathBuf>,
+    /// instrument palette for `music.kind = "soundfont"` (overrides the project style)
+    #[serde(default, alias = "soundfont_style", alias = "music_style")]
+    pub music_soundfont_style: Option<SoundfontStyle>,
     /// one beat per idea, in order
     pub beats: Vec<BeatArg>,
     pub end_card: Option<EndCardArg>,
@@ -185,6 +220,24 @@ pub fn create_project(a: &CreateProjectArgs) -> Result<ProjectCreated> {
     if a.music == MusicKind::File && a.music_file.is_none() {
         bail!("music = \"file\" needs music_file");
     }
+    if a.music == MusicKind::Soundfont && a.music_soundfont.is_none() {
+        bail!("music = \"soundfont\" needs music_soundfont");
+    }
+    if a.music == MusicKind::Soundfont && a.music_soundfont_style.is_none() {
+        bail!("music = \"soundfont\" needs music_soundfont_style");
+    }
+    if a.music != MusicKind::Soundfont && (a.music_soundfont.is_some() || a.music_soundfont_style.is_some()) {
+        bail!("music_soundfont / music_soundfont_style only apply when music = \"soundfont\"");
+    }
+    if let Some(bpm) = a.bpm {
+        anyhow::ensure!(bpm.is_finite() && (1.0..=300.0).contains(&bpm), "bpm must be between 1 and 300");
+    }
+    if let Some(k) = a.music_key {
+        anyhow::ensure!(k.is_finite() && k.fract() == 0.0 && (36.0..=72.0).contains(&k), "music_key must be a finite integer MIDI note 36..=72");
+    }
+    if a.music_key.is_some() && a.music_direction.is_none() {
+        bail!("music_key requires music_direction");
+    }
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let style = dir.join(STYLE_FILE);
     if style.exists() && !a.overwrite {
@@ -200,8 +253,12 @@ pub fn create_project(a: &CreateProjectArgs) -> Result<ProjectCreated> {
             "music",
             Some(table(vec![
                 ("kind", Some(enum_str(&a.music)?)),
+                ("direction", a.music_direction.as_ref().map(enum_str).transpose()?),
+                ("key", num(a.music_key)),
                 ("bpm", num(a.bpm)),
                 ("file", a.music_file.as_deref().map(absolute).transpose()?.as_deref().map(path_str)),
+                ("soundfont", a.music_soundfont.as_deref().map(absolute).transpose()?.as_deref().map(path_str)),
+                ("soundfont_style", a.music_soundfont_style.as_ref().map(enum_str).transpose()?),
             ])),
         ),
     ]);
@@ -242,9 +299,39 @@ fn beat_value(b: &BeatArg) -> Result<Value> {
         ("dur", num(b.dur_s)),
         ("flash", b.flash.then_some(Value::Boolean(true))),
         ("cue", b.cue.as_ref().map(enum_str).transpose()?),
+        ("energy", num(b.music_energy)),
         ("clips", Some(Value::Array(b.clips.iter().map(clip_value).collect()))),
         ("overlay", overlay),
     ]))
+}
+
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// a temporary file in the project folder; removing it on drop leaves the previous brief untouched when
+/// writing, parsing or validating the new one fails
+struct TempFile {
+    path: PathBuf,
+}
+
+impl TempFile {
+    fn create(dir: &Path) -> Result<(Self, std::fs::File)> {
+        for _ in 0..100 {
+            let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(".{BRIEF_FILE}.{}.{seq}.tmp", std::process::id()));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e).with_context(|| format!("creating a temporary brief in {}", dir.display())),
+            }
+        }
+        bail!("could not create a unique temporary brief in {}", dir.display())
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
@@ -252,6 +339,22 @@ pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
     let style = dir.join(STYLE_FILE);
     anyhow::ensure!(style.is_file(), "{} has no {STYLE_FILE}: call create_project first", dir.display());
     anyhow::ensure!(!a.beats.is_empty(), "a brief needs at least one beat");
+    if let Some(bpm) = a.music_bpm {
+        anyhow::ensure!(bpm.is_finite() && (1.0..=300.0).contains(&bpm), "music_bpm must be between 1 and 300");
+    }
+    if let Some(k) = a.music_key {
+        anyhow::ensure!(k.is_finite() && k.fract() == 0.0 && (36.0..=72.0).contains(&k), "music_key must be a finite integer MIDI note 36..=72");
+    }
+    for b in &a.beats {
+        if let Some(e) = b.music_energy {
+            anyhow::ensure!((0.0..=1.0).contains(&e), "music_energy must be 0..=1");
+        }
+    }
+    if let Some(e) = &a.end_card {
+        if let Some(en) = e.music_energy {
+            anyhow::ensure!((0.0..=1.0).contains(&en), "music_energy must be 0..=1");
+        }
+    }
     anyhow::ensure!(
         !a.name.is_empty() && a.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
         "name must be letters, digits, '_' or '-' (it becomes the file name)"
@@ -266,18 +369,36 @@ pub fn write_brief(a: &WriteBriefArgs) -> Result<BriefWritten> {
             ("y", num(e.y)),
             ("w", num(e.w)),
             ("text", e.text.clone().map(Value::String)),
+            ("energy", num(e.music_energy)),
         ])
     });
+    let music = if a.music_direction.is_some() || a.music_bpm.is_some() || a.music_key.is_some() || a.music_soundfont.is_some() || a.music_soundfont_style.is_some() {
+        Some(table(vec![
+            ("direction", a.music_direction.as_ref().map(enum_str).transpose()?),
+            ("bpm", num(a.music_bpm)),
+            ("key", num(a.music_key)),
+            ("soundfont", a.music_soundfont.as_deref().map(absolute).transpose()?.as_deref().map(path_str)),
+            ("soundfont_style", a.music_soundfont_style.as_ref().map(enum_str).transpose()?),
+        ]))
+    } else {
+        None
+    };
     let doc = table(vec![
         ("extends", Some(Value::String(STYLE_FILE.into()))),
         ("video", Some(table(vec![("name", Some(Value::String(a.name.clone())))]))),
         ("beat", Some(Value::Array(beats))),
         ("end_card", end_card),
+        ("music", music),
     ]);
     let header = "# Brief (written by Reelsmith write_brief): one [[beat]] per idea. Render it with the render tool.\n\n";
+    let text = format!("{header}{}", toml::to_string_pretty(&doc)?);
     let config = dir.join(BRIEF_FILE);
-    std::fs::write(&config, format!("{header}{}", toml::to_string_pretty(&doc)?))?;
-    let plan = Plan::from_file(&config, &Overrides::default())?;
+    let (tmp, mut file) = TempFile::create(&dir)?;
+    file.write_all(text.as_bytes()).with_context(|| format!("writing {}", tmp.path.display()))?;
+    drop(file);
+    let mut plan = Plan::from_file(&tmp.path, &Overrides::default())?;
+    std::fs::rename(&tmp.path, &config).with_context(|| format!("replacing {}", config.display()))?;
+    plan.config = plan.config.parent().unwrap_or(Path::new(".")).join(BRIEF_FILE);
     let missing = plan.missing_inputs();
     let suggestions = suggest_missing(&plan.clips_dir, &plan.motion_dir, &missing);
     Ok(BriefWritten { config, style_file: style, plan: pipeline::summary(&plan, Res::Preview), missing, suggestions })
@@ -292,8 +413,11 @@ fn media_stems(dir: &Path, exts: &[&str]) -> Vec<String> {
                 .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
                 .filter_map(|e| {
                     let p = e.path();
-                    let ext = p.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
-                    if exts.contains(&ext.as_str()) {
+                    // extension matching is case-sensitive on purpose: the resolver only tries
+                    // lowercase `exts` via direct join, so accepting e.g. `.MP4` here would
+                    // suggest a bare stem that cannot resolve.
+                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or_default();
+                    if exts.contains(&ext) {
                         // non-UTF-8 stems cannot be named in a brief either, so dropping them loses nothing
                         p.file_stem().and_then(|x| x.to_str()).map(str::to_string)
                     } else {

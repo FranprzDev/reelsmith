@@ -5,7 +5,7 @@ use crate::audio::master::{Loudness, measure};
 use crate::audio::read_wav;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Run `ffmpeg -y -v error <args>`; on failure the error names `what` and carries ffmpeg's stderr.
@@ -121,6 +121,45 @@ pub fn frame_at(file: &Path, t: f64, out: &Path, width: u32) -> Result<()> {
     ffmpeg(&args, &format!("the frame at {t:.2} s"))
 }
 
+/// Several frames from the same file in one ffmpeg process per chunk of four requests. Each request keeps its own
+/// `-ss <t> -i FILE` pair (the exact seek of [`frame_at`]) and is mapped to its own output with
+/// `-map <input>:v:0 -frames:v 1 -update 1 -vf scale=W:-2 OUT`, selecting the first video stream of each input;
+/// the frames match separate [`frame_at`] calls byte-for-byte only for files with a single video stream.
+pub fn frames_at(file: &Path, requests: &[(f64, PathBuf)], width: u32) -> Result<()> {
+    if requests.is_empty() {
+        return Ok(());
+    }
+    for chunk in requests.chunks(4) {
+        let args = frames_at_args(file, chunk, width);
+        let times: Vec<String> = chunk.iter().map(|(t, _)| format!("{t:.2}")).collect();
+        ffmpeg(&args, &format!("the frames at {} s", times.join(", ")))?;
+    }
+    Ok(())
+}
+
+/// Build the ffmpeg arguments for one batch: one seeked input per request in request order, then one mapped output
+/// per request (input `i` → its own file), using the same scale filter as [`frame_at`].
+fn frames_at_args(file: &Path, requests: &[(f64, PathBuf)], width: u32) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    for (t, _) in requests {
+        args.extend(["-ss".into(), format!("{t:.3}"), "-i".into(), file.display().to_string()]);
+    }
+    for (i, (_, out)) in requests.iter().enumerate() {
+        args.extend([
+            "-map".into(),
+            format!("{i}:v:0"),
+            "-frames:v".into(),
+            "1".into(),
+            "-update".into(),
+            "1".into(),
+            "-vf".into(),
+            format!("scale={width}:-2"),
+            out.display().to_string(),
+        ]);
+    }
+    args
+}
+
 /// Per-frame luma motion `(pts_time, ydif)` from ffmpeg `signalstats`, over the window starting at
 /// `start` seconds (`dur` caps its length). YDIF is the mean absolute luma difference between sampled
 /// frames (about 0 for a frozen frame, tens for fast cuts). Sampling - 15 fps at 160 px wide - keeps the
@@ -172,5 +211,26 @@ mod tests {
     #[test]
     fn ydif_parsing_skips_lines_without_ydif() {
         assert_eq!(parse_ydif("frame:0 pts:0 pts_time:0\nlavfi.signalstats.YAVG=1.0\n"), vec![]);
+    }
+
+    #[test]
+    fn frames_at_args_seeks_each_input_in_order_and_maps_each_output() {
+        let file = Path::new("/tmp/in.mp4");
+        let requests = vec![(0.3, PathBuf::from("/tmp/cap_00.jpg")), (1.5, PathBuf::from("/tmp/cap_01.jpg"))];
+        let args = frames_at_args(file, &requests, 240);
+        assert_eq!(
+            args,
+            [
+                "-ss", "0.300", "-i", "/tmp/in.mp4", "-ss", "1.500", "-i", "/tmp/in.mp4", "-map", "0:v:0", "-frames:v", "1", "-update", "1", "-vf", "scale=240:-2", "/tmp/cap_00.jpg", "-map", "1:v:0", "-frames:v", "1", "-update", "1", "-vf", "scale=240:-2", "/tmp/cap_01.jpg",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn frames_at_args_for_no_requests_is_empty() {
+        assert!(frames_at_args(Path::new("/tmp/in.mp4"), &[], 240).is_empty());
     }
 }

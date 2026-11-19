@@ -153,6 +153,26 @@ Feedback collected from real review rounds. Treat it as taste guidance, not as h
   verification or after 24 h), and Studio's "we had trouble saving your video" error went away after a fresh sign-in.
 - Never commit videos, thumbnails, client clips or other large binaries to a repository.
 
+### Brief writes (`write_brief`)
+
+- **Symptom:** a rejected `write_brief` call (for example a beat with `dur_s = -1`) still changed the hash of the
+  existing `brief.toml`, so the previous working brief was lost.
+- **Cause:** `write_brief` wrote `brief.toml` first and validated it only afterwards with `Plan::from_file`; a config
+  error therefore happened after the destructive write.
+- **Fix (2026-11-10):** write the generated TOML to a unique temporary file **in the same project folder** with
+  `create_new`, validate that file with `Plan::from_file`, then commit it with `std::fs::rename` only after validation
+  succeeds. `std::fs::rename` replaces an existing target on both Unix and Windows (`MoveFileExW`, with a
+  `SetFileInformationByHandle` fallback), so no backup dance is needed. Sharing the folder keeps
+  `extends = "promo.toml"` resolving the same way, and the returned `config` path stays `<project>/brief.toml`; the
+  validated plan is re-pointed at the final name while keeping the canonical parent directory `Plan::from_file`
+  resolved. A drop guard removes the temp file when writing or validation fails, and concurrent calls use distinct
+  process/counter names. Missing media is still reported in `missing` / `suggestions`, not treated as a validation
+  failure.
+- **Limits:** the rename is atomic only within one filesystem, so the temp file deliberately lives in the project
+  folder. If `brief.toml` is a symlink, the rename replaces the link itself rather than writing through it to the
+  target (the old `std::fs::write` followed the link); the file left by `write_brief` is a regular file. There is no
+  project lock: two concurrent `write_brief` calls both validate, and the last successful rename wins.
+
 ## 4. Performance: what helped and what did not
 
 Full numbers and setup: [`../PERFORMANCE.md`](../PERFORMANCE.md). In short:
@@ -185,3 +205,40 @@ Full numbers and setup: [`../PERFORMANCE.md`](../PERFORMANCE.md). In short:
 - [ ] Music runs to the last frame; hits land on their visual frame.
 - [ ] Rendered at the resolution the stage calls for (360p preview, 720p draft; 1080p only after the explicit OK).
 - [ ] Delivered with the SRT, QA report and a note of open decisions; nothing uploaded or published.
+
+### Missing-input hints and extension case (2026-11-09)
+
+The resolver tries bare names and then the configured lowercase media extensions. On a case-sensitive filesystem,
+`Nebula.MP4` must not produce the bare-stem hint `Nebula`: following that hint still leaves the input missing.
+The optional hint filter now matches extensions exactly. This is conservative on case-insensitive filesystems:
+some otherwise usable uppercase-extension hints are omitted there. Exact filenames still work; resolution itself
+is unchanged. Verified with real MCP calls for the uppercase case and normal `nebulaa` / `badg` typos, plus a
+fresh 360p smoke render. Do not treat a rendered smoke clip as proof that every hint edge case works.
+
+### Empty procedural progression and panicked render jobs (2026-11-10)
+
+Repro: MCP config with `music.kind = "procedural"` and `music.progression = []` passed Plan validation, then
+`audio::procedural_bed` indexed `prog[bar_i % prog.len()]` with a zero-length `prog` and panicked. The panic
+unwound through `tokio::task::spawn_blocking`, so the job's `outcome` stayed `None` forever and every later render
+was rejected as busy.
+
+Fix: Plan validation now rejects an empty progression only when `music.kind = "procedural"` (domain check, before
+rendering). Render jobs wrap `pipeline::build` in `std::panic::catch_unwind(AssertUnwindSafe(...))` and record a
+generic `"render pipeline panicked"` failure, so the single-job slot is released and later renders can proceed.
+
+Limits: `catch_unwind` only catches unwinding panics. A binary built with `panic = "abort"` (or an aborting panic)
+cannot be caught; the MCP server relies on the default `panic = "unwind"` build. The catch also does not make a
+panicking pipeline safe to retry beyond releasing the job slot, and the panic payload is deliberately not exposed.
+
+### Musical feature limits (2026-11-10)
+
+The directed procedural bed takes its mood from an explicit host choice (`direction`); there is no automatic content
+analysis of the clips or copy. QA reports objective targets (duration, loudness, true peak, motion, caption size) and
+never judges taste.
+
+### Sampled SoundFont audition (2026-11-10)
+
+Owner feedback: the first procedural moods still sounded like the same cheap synth. A 6 s audition now exists using
+FluidR3 GM sampled instruments, but taste approval is still pending; do not describe the sampled bed as approved
+studio quality or as our own recordings. The integration stays reversible: `music.kind = "soundfont"` is optional,
+requires a user-supplied local SF2, and falls back to nothing (render fails) when the bank is missing or invalid.

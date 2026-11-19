@@ -178,19 +178,29 @@ pub fn measure_crops(plan: &mut Plan) -> Result<()> {
     Ok(())
 }
 
-fn asset_size(o: &Overlay) -> Result<(u32, u32)> {
-    let p = media::probe(&o.asset)?;
-    let v = p["streams"].as_array().and_then(|s| s.iter().find(|x| x["codec_type"] == "video").cloned()).context("asset has no video stream")?;
-    Ok((v["width"].as_u64().unwrap_or(0) as u32, v["height"].as_u64().unwrap_or(0) as u32))
+/// Parse `(width, height, duration)` from a single ffprobe JSON value.
+fn parse_asset_info(v: &serde_json::Value) -> Result<(u32, u32, Option<f64>)> {
+    let stream = v["streams"]
+        .as_array()
+        .and_then(|s| s.iter().find(|x| x["codec_type"] == "video"))
+        .context("asset has no video stream")?;
+    let w = stream["width"].as_u64().unwrap_or(0) as u32;
+    let h = stream["height"].as_u64().unwrap_or(0) as u32;
+    let dur = v["format"]["duration"].as_str().and_then(|s| s.parse().ok());
+    Ok((w, h, dur))
+}
+
+fn asset_info(o: &Overlay) -> Result<(u32, u32, Option<f64>)> {
+    parse_asset_info(&media::probe(&o.asset)?)
 }
 
 /// the union of the non-transparent pixels over 8 frames spread across the asset (padded 4 px, even size)
 fn measure(o: &Overlay, build: &Path) -> Result<[u32; 4]> {
-    let (w, h) = asset_size(o)?;
+    let (w, h, dur_opt) = asset_info(o)?;
     if matches!(o.crop, crate::config::Crop::Mode(CropMode::Full)) {
         return Ok([0, 0, w, h]);
     }
-    let dur = media::duration(&o.asset)?.unwrap_or(1.0).max(0.1);
+    let dur = dur_opt.unwrap_or(1.0).max(0.1);
     let tmp = build.join("cropscan");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)?;
@@ -228,4 +238,27 @@ fn measure(o: &Overlay, build: &Path) -> Result<[u32; 4]> {
     let (x1, y1) = ((x1 + pad + 1).min(w), (y1 + pad + 1).min(h));
     let (cw, ch) = ((x1 - x0) & !1, (y1 - y0) & !1);
     Ok([x0, y0, cw.max(2), ch.max(2)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_video_and_duration() {
+        let v = serde_json::json!({
+            "streams": [{"codec_type": "audio"}, {"codec_type": "video", "width": 1920, "height": 1080}],
+            "format": {"duration": "12.5"}
+        });
+        assert_eq!(parse_asset_info(&v).unwrap(), (1920, 1080, Some(12.5)));
+    }
+
+    #[test]
+    fn missing_video_is_error() {
+        let v = serde_json::json!({
+            "streams": [{"codec_type": "audio"}],
+            "format": {"duration": "1.0"}
+        });
+        assert!(parse_asset_info(&v).is_err());
+    }
 }

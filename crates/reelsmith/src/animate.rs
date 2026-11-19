@@ -497,10 +497,163 @@ impl DrawOn {
 
 /// Straight (non-premultiplied) RGBA bytes for ffmpeg's `rgba` input.
 pub(crate) fn straight_rgba(pm: &Pixmap, out: &mut Vec<u8>) {
-    out.clear();
-    for px in pm.pixels() {
-        let c = px.demultiply();
-        out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    out.resize(pm.data().len(), 0);
+    for (i, (src, dst)) in pm.data().chunks_exact(4).zip(out.chunks_exact_mut(4)).enumerate() {
+        let a = src[3];
+        if a == 255 {
+            dst.copy_from_slice(src);
+        } else if a == 0 && src[0] == 0 && src[1] == 0 && src[2] == 0 {
+            dst.fill(0);
+        } else {
+            let c = pm.pixels()[i].demultiply();
+            dst.copy_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use resvg::tiny_skia::Pixmap;
+
+    #[test]
+    fn straight_rgba_all_alpha() {
+        let mut pm = Pixmap::new(256, 1).unwrap();
+        for i in 0..256usize {
+            let a = i as u8;
+            let off = i * 4;
+            pm.data_mut()[off] = a;
+            pm.data_mut()[off + 1] = a;
+            pm.data_mut()[off + 2] = a;
+            pm.data_mut()[off + 3] = a;
+        }
+        let mut expected = Vec::with_capacity(pm.data().len());
+        for px in pm.pixels() {
+            let c = px.demultiply();
+            expected.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+        let mut out = Vec::new();
+        straight_rgba(&pm, &mut out);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_straight_rgba_median5_vs_old() {
+        let (w, h) = (540usize, 540usize);
+        let mut pm = Pixmap::new(w as u32, h as u32).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                let a = match (x + y) % 3 {
+                    0 => 0u8,
+                    1 => 255u8,
+                    _ => 128u8,
+                };
+                let sr = ((x * 7 + y * 13) % 256) as u8;
+                let sg = ((x * 11 + y * 5) % 256) as u8;
+                let sb = ((x * 3 + y * 17) % 256) as u8;
+                pm.data_mut()[i] = (sr as u16 * a as u16 / 255) as u8;
+                pm.data_mut()[i + 1] = (sg as u16 * a as u16 / 255) as u8;
+                pm.data_mut()[i + 2] = (sb as u16 * a as u16 / 255) as u8;
+                pm.data_mut()[i + 3] = a;
+            }
+        }
+
+        fn old_demultiply_into_vec(pm: &Pixmap, out: &mut Vec<u8>) {
+            out.resize(pm.data().len(), 0);
+            for i in 0..pm.pixels().len() {
+                let c = pm.pixels()[i].demultiply();
+                let off = i * 4;
+                out[off] = c.red();
+                out[off + 1] = c.green();
+                out[off + 2] = c.blue();
+                out[off + 3] = c.alpha();
+            }
+        }
+
+        let mut new_medians: Vec<std::time::Duration> = Vec::new();
+        let mut old_medians: Vec<std::time::Duration> = Vec::new();
+        for _ in 0..5 {
+            let mut out = vec![0u8; pm.data().len()];
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    straight_rgba(&pm, &mut out);
+                    let d = s.elapsed();
+                    std::hint::black_box(&out);
+                    d
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+
+            let mut out = vec![0u8; pm.data().len()];
+            let mut ts: Vec<std::time::Duration> = (0..30)
+                .map(|_| {
+                    let s = std::time::Instant::now();
+                    old_demultiply_into_vec(&pm, &mut out);
+                    let d = s.elapsed();
+                    std::hint::black_box(&out);
+                    d
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+        }
+
+        eprintln!("new straight_rgba medians: {:?}", new_medians);
+        eprintln!("old demultiply into vec medians: {:?}", old_medians);
+        assert_eq!(pm.data().len(), w * h * 4);
+    }
+
+    #[test]
+    fn straight_rgba_alpha0_all_values_per_channel() {
+        // alpha 0 with every possible value in each channel (and combinations), including nonzero RGB
+        for v in 0u8..=255 {
+            for channel in 0..3usize {
+                let mut pm = Pixmap::new(1, 1).unwrap();
+                pm.data_mut()[channel] = v;
+                pm.data_mut()[3] = 0;
+                let mut out = Vec::new();
+                straight_rgba(&pm, &mut out);
+                let c = pm.pixels()[0].demultiply();
+                assert_eq!(out, vec![c.red(), c.green(), c.blue(), c.alpha()]);
+            }
+        }
+        // all three channels simultaneously taking all values
+        for v in 0u8..=255 {
+            let mut pm = Pixmap::new(1, 1).unwrap();
+            pm.data_mut()[0] = v;
+            pm.data_mut()[1] = v;
+            pm.data_mut()[2] = v;
+            pm.data_mut()[3] = 0;
+            let mut out = Vec::new();
+            straight_rgba(&pm, &mut out);
+            let c = pm.pixels()[0].demultiply();
+            assert_eq!(out, vec![c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+    }
+
+    #[test]
+    fn straight_rgba_varied_alpha_and_channels() {
+        // Pixmap data_mut can violate the nominal premul invariant; must match demultiply exactly
+        let mut pm = Pixmap::new(256, 4).unwrap();
+        for y in 0..4usize {
+            for x in 0..256usize {
+                let i = (y * 256 + x) * 4;
+                pm.data_mut()[i] = ((x * 17 + y * 97 + 3) % 256) as u8;
+                pm.data_mut()[i + 1] = ((x * 31 + y * 53 + 11) % 256) as u8;
+                pm.data_mut()[i + 2] = ((x * 53 + y * 13 + 7) % 256) as u8;
+                pm.data_mut()[i + 3] = ((x + y * 64) % 256) as u8;
+            }
+        }
+        let mut out = Vec::new();
+        straight_rgba(&pm, &mut out);
+        for i in 0..(256 * 4) {
+            let c = pm.pixels()[i].demultiply();
+            assert_eq!(&out[i * 4..i * 4 + 4], &[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
     }
 }
 
@@ -592,57 +745,60 @@ pub fn animate(a: &AnimateSvgArgs) -> Result<AnimatedSvg> {
     let mut write_err = None;
 
     for f in 0..frames {
-        let t = f as f64 / fps as f64;
-        // which phase, its animation, raw progress u and eased progress k
-        let (anim, u, k) = if f < n_in {
-            let u = (f as f64 + 1.0) / n_in as f64;
-            (a.animation, u, a.easing.at(u))
-        } else if f < n_in + n_hold || a.exit.is_none() {
-            (a.animation, 1.0, 1.0)
-        } else {
-            // the exit is its entrance backwards; its last frame is fully out
-            let u = 1.0 - (f - n_in - n_hold + 1) as f64 / n_out as f64;
-            (a.exit.unwrap_or(a.animation), u, a.easing.at(u))
-        };
-        let mut p = pose(anim, k, u, lay.slide);
-        if anim == Animation::Glow && f >= n_in {
-            // the hold pulse: one slow breath every 1.6 s, phase 0 where the entrance landed
-            let ph = (t - dur) / 1.6 * std::f64::consts::TAU;
-            let breath = 0.5 - 0.5 * ph.cos();
-            p.glow = (0.35 + 0.3 * breath) * ease::clamp(k);
-            p.scale *= 1.0 + 0.02 * breath;
-        }
-        canvas.fill(tiny_skia::Color::TRANSPARENT);
-        match (p.draw, &draw_on) {
-            (Some(u), Some(d)) => {
-                let svg = d.frame_svg(u, a.easing);
-                let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the dashed SVG: {e}"))?;
-                let s = t2.size();
-                let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
-                    .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
-                resvg::render(&t2, tf, &mut canvas.as_mut());
+        let reusable_hold = f > n_in && f < n_in + n_hold && a.animation != Animation::Glow;
+        if !reusable_hold {
+            let t = f as f64 / fps as f64;
+            // which phase, its animation, raw progress u and eased progress k
+            let (anim, u, k) = if f < n_in {
+                let u = (f as f64 + 1.0) / n_in as f64;
+                (a.animation, u, a.easing.at(u))
+            } else if f < n_in + n_hold || a.exit.is_none() {
+                (a.animation, 1.0, 1.0)
+            } else {
+                // the exit is its entrance backwards; its last frame is fully out
+                let u = 1.0 - (f - n_in - n_hold + 1) as f64 / n_out as f64;
+                (a.exit.unwrap_or(a.animation), u, a.easing.at(u))
+            };
+            let mut p = pose(anim, k, u, lay.slide);
+            if anim == Animation::Glow && f >= n_in {
+                // the hold pulse: one slow breath every 1.6 s, phase 0 where the entrance landed
+                let ph = (t - dur) / 1.6 * std::f64::consts::TAU;
+                let breath = 0.5 - 0.5 * ph.cos();
+                p.glow = (0.35 + 0.3 * breath) * ease::clamp(k);
+                p.scale *= 1.0 + 0.02 * breath;
             }
-            _ => {
-                let place = |w: f64, h: f64| {
-                    // map the raster (w x h at OVER) to the art box, scaled and rotated about the canvas centre
-                    let s = p.scale / OVER;
-                    Transform::from_translate(-(w / 2.0) as f32, -(h / 2.0) as f32)
-                        .post_scale(s as f32, s as f32)
-                        .post_rotate(p.rotate_deg as f32)
-                        .post_translate(cx as f32, (cy + p.dy) as f32)
-                };
-                if let (Some(g), true) = (&glow, p.glow > 0.001) {
-                    let paint = PixmapPaint { opacity: (p.glow.min(1.0) * p.opacity) as f32, blend_mode: BlendMode::Plus, quality: FilterQuality::Bicubic };
-                    canvas.draw_pixmap(0, 0, g.as_ref(), &paint, place(g.width() as f64, g.height() as f64), None);
+            canvas.fill(tiny_skia::Color::TRANSPARENT);
+            match (p.draw, &draw_on) {
+                (Some(u), Some(d)) => {
+                    let svg = d.frame_svg(u, a.easing);
+                    let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the dashed SVG: {e}"))?;
+                    let s = t2.size();
+                    let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
+                        .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
+                    resvg::render(&t2, tf, &mut canvas.as_mut());
                 }
-                let paint = PixmapPaint { opacity: p.opacity.clamp(0.0, 1.0) as f32, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bicubic };
-                canvas.draw_pixmap(0, 0, art.as_ref(), &paint, place(rw as f64, rh as f64), None);
+                _ => {
+                    let place = |w: f64, h: f64| {
+                        // map the raster (w x h at OVER) to the art box, scaled and rotated about the canvas centre
+                        let s = p.scale / OVER;
+                        Transform::from_translate(-(w / 2.0) as f32, -(h / 2.0) as f32)
+                            .post_scale(s as f32, s as f32)
+                            .post_rotate(p.rotate_deg as f32)
+                            .post_translate(cx as f32, (cy + p.dy) as f32)
+                    };
+                    if let (Some(g), true) = (&glow, p.glow > 0.001) {
+                        let paint = PixmapPaint { opacity: (p.glow.min(1.0) * p.opacity) as f32, blend_mode: BlendMode::Plus, quality: FilterQuality::Bicubic };
+                        canvas.draw_pixmap(0, 0, g.as_ref(), &paint, place(g.width() as f64, g.height() as f64), None);
+                    }
+                    let paint = PixmapPaint { opacity: p.opacity.clamp(0.0, 1.0) as f32, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bicubic };
+                    canvas.draw_pixmap(0, 0, art.as_ref(), &paint, place(rw as f64, rh as f64), None);
+                }
             }
+            if f + 1 == n_in.max(1) {
+                canvas.save_png(&preview).with_context(|| format!("writing {}", preview.display()))?;
+            }
+            straight_rgba(&canvas, &mut bytes);
         }
-        if f + 1 == n_in.max(1) {
-            canvas.save_png(&preview).with_context(|| format!("writing {}", preview.display()))?;
-        }
-        straight_rgba(&canvas, &mut bytes);
         if let Err(e) = stdin.write_all(&bytes) {
             write_err = Some(e);
             break;
