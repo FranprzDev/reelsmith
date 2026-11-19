@@ -77,6 +77,11 @@ fn cfg(msg: String) -> anyhow::Error {
     ConfigError(msg).into()
 }
 
+/// Whether `k` exactly matches the previously rendered progress, so the cached frame can be reused.
+fn progress_cache_hit(prev: Option<u64>, k: f64) -> bool {
+    prev == Some(k.to_bits())
+}
+
 /// One drawable shape of a normalised SVG: its absolute `M L Q C Z` path data, fill color and opacity.
 #[derive(Debug, Clone)]
 struct Shape {
@@ -392,10 +397,18 @@ pub fn morph(a: &MorphSvgArgs) -> Result<MorphedSvg> {
         return Err(cfg(format!("output must be a .mov file, got {}", a.output.display())));
     }
 
+    // Load the system font database once: scanning every installed font is the expensive part, and both
+    // SVGs can share the same Arc<fontdb::Database>. Only resources_dir (relative asset resolution) differs.
+    let base = animate::usvg_options(&a.from_svg);
     let mut trees = Vec::new();
     for (which, p) in [("from_svg", &a.from_svg), ("to_svg", &a.to_svg)] {
         let source = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
-        let tree = usvg::Tree::from_str(&source, &animate::usvg_options(p)).map_err(|e| cfg(format!("{} is not an SVG usvg can read: {e}", p.display())))?;
+        let mut opt = usvg::Options {
+            resources_dir: p.parent().map(PathBuf::from),
+            ..Default::default()
+        };
+        opt.fontdb = base.fontdb.clone();
+        let tree = usvg::Tree::from_str(&source, &opt).map_err(|e| cfg(format!("{} is not an SVG usvg can read: {e}", p.display())))?;
         animate::check_text(tree.root(), &source)?;
         let _ = which;
         trees.push(tree);
@@ -434,6 +447,7 @@ pub fn morph(a: &MorphSvgArgs) -> Result<MorphedSvg> {
     let (cx, cy) = (cw as f64 / 2.0, ch as f64 / 2.0);
     let mid = n_in / 2;
     let mut write_err = None;
+    let mut prev_k_bits: Option<u64> = None;
 
     for f in 0..frames {
         // which phase, and eased morph progress k (1 = fully the second shape; the morph-back runs it to 0)
@@ -444,17 +458,20 @@ pub fn morph(a: &MorphSvgArgs) -> Result<MorphedSvg> {
         } else {
             a.easing.at(1.0 - (f - n_in - n_hold + 1) as f64 / n_out as f64)
         };
-        let svg = frame_svg(&engine, &colors, k)?;
-        let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the morphed SVG: {e}"))?;
-        let s = t2.size();
-        canvas.fill(resvg::tiny_skia::Color::TRANSPARENT);
-        let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
-            .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
-        resvg::render(&t2, tf, &mut canvas.as_mut());
+        if !progress_cache_hit(prev_k_bits, k) {
+            let svg = frame_svg(&engine, &colors, k)?;
+            let t2 = usvg::Tree::from_str(&svg, &flat_opt).map_err(|e| anyhow::anyhow!("re-reading the morphed SVG: {e}"))?;
+            let s = t2.size();
+            canvas.fill(resvg::tiny_skia::Color::TRANSPARENT);
+            let tf = Transform::from_scale(lay.aw as f32 / s.width(), lay.ah as f32 / s.height())
+                .post_translate((cx - lay.aw / 2.0) as f32, (cy - lay.ah / 2.0) as f32);
+            resvg::render(&t2, tf, &mut canvas.as_mut());
+            animate::straight_rgba(&canvas, &mut bytes);
+            prev_k_bits = Some(k.to_bits());
+        }
         if f == mid {
             canvas.save_png(&preview).with_context(|| format!("writing {}", preview.display()))?;
         }
-        animate::straight_rgba(&canvas, &mut bytes);
         if let Err(e) = stdin.write_all(&bytes) {
             write_err = Some(e);
             break;
@@ -514,6 +531,118 @@ mod tests {
         assert!(parse_fill(&none).unwrap().is_none());
         let short = vec![("fill".to_string(), "#f08".to_string())];
         assert_eq!(parse_fill(&short).unwrap().unwrap().0, [255.0, 0.0, 136.0]);
+    }
+
+    #[test]
+    fn progress_cache_hit_bits() {
+        let k = 0.375_f64;
+        assert!(progress_cache_hit(Some(k.to_bits()), k));
+        assert!(!progress_cache_hit(None, k));
+        assert!(!progress_cache_hit(Some((k + 0.125).to_bits()), k));
+        assert!(progress_cache_hit(Some(1.0_f64.to_bits()), 1.0));
+    }
+
+    #[test]
+    fn morph_usvg_options_per_file_resources_and_shared_fontdb() {
+        use std::sync::Arc;
+        let from = PathBuf::from("/tmp/morph-fontscan-from/from.svg");
+        let to = PathBuf::from("/tmp/morph-fontscan-to/to.svg");
+        let base = animate::usvg_options(&from);
+
+        let mut o_from = usvg::Options {
+            resources_dir: from.parent().map(PathBuf::from),
+            ..Default::default()
+        };
+        o_from.fontdb = base.fontdb.clone();
+        let mut o_to = usvg::Options {
+            resources_dir: to.parent().map(PathBuf::from),
+            ..Default::default()
+        };
+        o_to.fontdb = base.fontdb.clone();
+
+        assert_ne!(o_from.resources_dir, o_to.resources_dir);
+        assert!(Arc::ptr_eq(&o_from.fontdb, &o_to.fontdb));
+        assert_eq!(o_from.fontdb.len(), o_to.fontdb.len());
+    }
+
+    #[test]
+    fn morph_text_parses_same_with_shared_fontdb() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text x="10" y="50" font-family="sans-serif" font-size="20">Hello</text></svg>"#;
+        let from = PathBuf::from("/tmp/morph-text-from/from.svg");
+        let to = PathBuf::from("/tmp/morph-text-to/to.svg");
+
+        let original_to = animate::usvg_options(&to);
+        let base = animate::usvg_options(&from);
+        let mut shared_to = usvg::Options {
+            resources_dir: to.parent().map(PathBuf::from),
+            ..Default::default()
+        };
+        shared_to.fontdb = base.fontdb.clone();
+
+        let t_original = usvg::Tree::from_str(svg, &original_to).unwrap();
+        let t_shared = usvg::Tree::from_str(svg, &shared_to).unwrap();
+        let wo = usvg::WriteOptions::default();
+        assert_eq!(t_original.to_string(&wo), t_shared.to_string(&wo));
+        assert_eq!(original_to.fontdb.len(), shared_to.fontdb.len());
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_morph_usvg_options_fontdb_median5() {
+        use std::time::Instant;
+        let from = PathBuf::from("/tmp/morph-bench-from/from.svg");
+        let to = PathBuf::from("/tmp/morph-bench-to/to.svg");
+
+        let mut old_medians: Vec<std::time::Duration> = Vec::new();
+        let mut new_medians: Vec<std::time::Duration> = Vec::new();
+        for _ in 0..5 {
+            let mut ts: Vec<std::time::Duration> = (0..10)
+                .map(|_| {
+                    let s = Instant::now();
+                    let a = animate::usvg_options(&from);
+                    let b = animate::usvg_options(&to);
+                    std::hint::black_box(&a);
+                    std::hint::black_box(&b);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            old_medians.push(ts[ts.len() / 2]);
+
+            let mut ts: Vec<std::time::Duration> = (0..10)
+                .map(|_| {
+                    let s = Instant::now();
+                    let base = animate::usvg_options(&from);
+                    let mut o_from = usvg::Options {
+                        resources_dir: from.parent().map(PathBuf::from),
+                        ..Default::default()
+                    };
+                    o_from.fontdb = base.fontdb.clone();
+                    let mut o_to = usvg::Options {
+                        resources_dir: to.parent().map(PathBuf::from),
+                        ..Default::default()
+                    };
+                    o_to.fontdb = base.fontdb.clone();
+                    std::hint::black_box(&o_from);
+                    std::hint::black_box(&o_to);
+                    s.elapsed()
+                })
+                .collect();
+            ts.sort();
+            new_medians.push(ts[ts.len() / 2]);
+        }
+        old_medians.sort();
+        new_medians.sort();
+        eprintln!("old (two usvg_options) medians: {:?}", old_medians);
+        eprintln!("new (base+clone) medians: {:?}", new_medians);
+
+        let base = animate::usvg_options(&from);
+        let mut o_to = usvg::Options {
+            resources_dir: to.parent().map(PathBuf::from),
+            ..Default::default()
+        };
+        o_to.fontdb = base.fontdb.clone();
+        assert_eq!(animate::usvg_options(&to).fontdb.len(), o_to.fontdb.len());
     }
 
     #[test]

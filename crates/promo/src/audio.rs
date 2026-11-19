@@ -311,7 +311,11 @@ pub fn run(p: &Plan, ev: &Events) -> Result<()> {
     for c in &p.cues {
         add_cue(&mut sc, c.kind, c.t, c.gain);
     }
-    let ir = sc.impulse(2.2);
+    let ir = if sc.wet.iter().flatten().all(|v| *v == 0.0) {
+        [vec![], vec![]]
+    } else {
+        sc.impulse(2.2)
+    };
     let mut mix = sc.mixdown(&ir);
     for ch in mix.iter_mut() {
         ch.truncate(sc.n);
