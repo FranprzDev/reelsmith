@@ -30,7 +30,6 @@ pub mod pool;
 pub mod preview_gate;
 pub mod progress;
 pub mod qa;
-pub mod remotion;
 pub mod render;
 pub mod script;
 pub mod soundfont;

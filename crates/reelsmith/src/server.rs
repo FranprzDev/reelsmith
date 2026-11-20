@@ -70,7 +70,7 @@ pub struct RenderArgs {
     pub encoder: EncoderChoice,
     /// how long to wait for the render before returning a job id (default 45)
     pub wait_seconds: Option<u64>,
-    /// render engine override: "fframes" (the config default), "hyperframes" (HTML compositions, needs Node.js 22+) or "remotion" (React compositions, needs Node.js 22+)
+    /// render engine override: "fframes" (the config default) or "hyperframes" (HTML compositions, needs Node.js 22+)
     pub engine: Option<promo::Engine>,
 }
 
@@ -221,7 +221,7 @@ impl Reelsmith {
         Ok(Json(blocking(move || memory::write_guide(&a)).await?))
     }
 
-    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed (procedural, file, optional sampled soundfont with local path and acoustic/cinematic/funk palette, optional direction/key/bpm and energy per beat), captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering, remotion for React-composition rendering). The SoundFont bank is user-supplied and never bundled.")]
+    #[tool(description = "Create a project folder with its promo.toml style: canvas aspect, clips and motion folders, music bed (procedural, file, optional sampled soundfont with local path and acoustic/cinematic/funk palette, optional direction/key/bpm and energy per beat), captions switch (off by default) and optional render engine (fframes by default, hyperframes for HTML-composition rendering). The SoundFont bank is user-supplied and never bundled.")]
     async fn create_project(&self, Parameters(a): Parameters<CreateProjectArgs>) -> Result<Json<ProjectCreated>, String> {
         Ok(Json(blocking(move || brief::create_project(&a)).await?))
     }
