@@ -77,6 +77,7 @@ pub enum Engine {
     #[default]
     Fframes,
     Hyperframes,
+    Remotion,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

@@ -53,7 +53,7 @@ pub struct CreateProjectArgs {
     /// replace an existing promo.toml
     #[serde(default)]
     pub overwrite: bool,
-    /// render engine for this project: "fframes" (default) or "hyperframes" (HTML compositions, needs Node.js 22+)
+    /// render engine for this project: "fframes" (default), "hyperframes" (HTML compositions, needs Node.js 22+) or "remotion" (React compositions, needs Node.js 22+)
     pub engine: Option<Engine>,
 }
 

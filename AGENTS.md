@@ -82,6 +82,8 @@ job is running. The usual tool order: `system_info` → `list_clips` (or `make_s
 - `fframes` (default): clip-based promos. HyperFrames (`[render] engine = "hyperframes"` or the `engine` argument):
   HTML/CSS/GSAP compositions rendered frame by frame; needs Node.js 22+ with `npx`, and does not support alpha motion
   overlays yet.
+- Remotion (`engine = "remotion"`): the same plan as a React composition rendered by `npx remotion render`; needs
+  Node.js 22+ (npm installs the project deps on first render) and does not support alpha motion overlays yet.
 - Overlays: `animate_svg` (SVG → alpha `.mov`), `draw_diagram` (Mermaid → self-drawing `.mov`), `stylize_clip` (ASCII /
   dither clips). Put results in the project's motion (or clips) folder and reference them by `asset_name`.
 - Technical illustrations: read `.agents/skills/teardown/SKILL.md` and its linked references; the handoff is in
