@@ -166,6 +166,17 @@ pub fn build(cfg: &Path, o: &BuildOptions, ev: &Events) -> Result<BuildOutcome> 
             ev.stage(Stage::Render, Status::Done);
             ev.stage(Stage::Mux, Status::Skipped);
         }
+        crate::config::Engine::Remotion => {
+            ev.stage(Stage::Plate, Status::Skipped);
+            ev.stage(Stage::Audio, Status::Start);
+            audio::run(&p, ev)?;
+            ev.stage(Stage::Audio, Status::Done);
+
+            ev.stage(Stage::Render, Status::Start);
+            crate::remotion::render(&p, r, &out, o.jobs, ev)?;
+            ev.stage(Stage::Render, Status::Done);
+            ev.stage(Stage::Mux, Status::Skipped);
+        }
     }
 
     ev.stage(Stage::Srt, Status::Start);

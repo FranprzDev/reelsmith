@@ -62,7 +62,8 @@ fn parse(args: &[String]) -> Result<Opts, ConfigError> {
                 o.ov.engine = Some(match v {
                     "fframes" => promo::Engine::Fframes,
                     "hyperframes" => promo::Engine::Hyperframes,
-                    _ => return Err(ConfigError(format!("--engine: unknown engine {v} (fframes | hyperframes)"))),
+                    "remotion" => promo::Engine::Remotion,
+                    _ => return Err(ConfigError(format!("--engine: unknown engine {v} (fframes | hyperframes | remotion)"))),
                 });
             }
             "--captions" => {
